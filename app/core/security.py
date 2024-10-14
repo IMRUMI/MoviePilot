@@ -3,18 +3,21 @@ import hashlib
 import hmac
 import json
 import os
+import traceback
 from datetime import datetime, timedelta
-from typing import Any, Union, Optional
+from typing import Any, Union, Optional, Annotated
 import jwt
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-from fastapi import HTTPException, status, Depends
+from fastapi import HTTPException, status, Depends, Header
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 
 from app import schemas
 from app.core.config import settings
 from cryptography.fernet import Fernet
+
+from app.log import logger
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 ALGORITHM = "HS256"
@@ -26,7 +29,8 @@ reusable_oauth2 = OAuth2PasswordBearer(
 
 
 def create_access_token(
-        subject: Union[str, Any], expires_delta: timedelta = None
+        userid: Union[str, Any], username: str, super_user: bool = False,
+        expires_delta: timedelta = None, level: int = 1
 ) -> str:
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -34,7 +38,13 @@ def create_access_token(
         expire = datetime.utcnow() + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
-    to_encode = {"exp": expire, "sub": str(subject)}
+    to_encode = {
+        "exp": expire,
+        "sub": str(userid),
+        "username": username,
+        "super_user": super_user,
+        "level": level
+    }
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -50,6 +60,56 @@ def verify_token(token: str = Depends(reusable_oauth2)) -> schemas.TokenPayload:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="token校验不通过",
         )
+
+
+def __get_token(token: str = None) -> str:
+    """
+    从请求URL中获取token
+    """
+    return token
+
+
+def __get_apikey(apikey: str = None, x_api_key: Annotated[str | None, Header()] = None) -> str:
+    """
+    从请求URL中获取apikey
+    """
+    return apikey or x_api_key
+
+
+def verify_apitoken(token: str = Depends(__get_token)) -> str:
+    """
+    通过依赖项使用token进行身份认证
+    """
+    if token != settings.API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="token校验不通过"
+        )
+    return token
+
+
+def verify_apikey(apikey: str = Depends(__get_apikey)) -> str:
+    """
+    通过依赖项使用apikey进行身份认证
+    """
+    if apikey != settings.API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="apikey校验不通过"
+        )
+    return apikey
+
+
+def verify_uri_token(token: str = Depends(__get_token)) -> str:
+    """
+    通过依赖项使用token进行身份认证
+    """
+    if not verify_token(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="token校验不通过"
+        )
+    return token
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -68,7 +128,7 @@ def decrypt(data: bytes, key: bytes) -> Optional[bytes]:
     try:
         return fernet.decrypt(data)
     except Exception as e:
-        print(str(e))
+        logger.error(f"解密失败：{str(e)} - {traceback.format_exc()}")
         return None
 
 

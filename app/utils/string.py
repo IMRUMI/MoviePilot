@@ -13,6 +13,12 @@ import dateutil.parser
 from app.schemas.types import MediaType
 
 
+_special_domains = [
+    'u2.dmhy.org',
+    'pt.ecust.pp.ua',
+]
+
+
 class StringUtils:
 
     @staticmethod
@@ -64,10 +70,29 @@ class StringUtils:
         return str(round(time_sec / (b + 1))) + u
 
     @staticmethod
+    def str_secends(time_sec: Union[str, int, float]) -> str:
+        """
+        将秒转为时分秒字符串
+        """
+        hours = time_sec // 3600
+        remainder_seconds = time_sec % 3600
+        minutes = remainder_seconds // 60
+        seconds = remainder_seconds % 60
+
+        time: str = str(int(seconds)) + '秒'
+        if minutes:
+            time = str(int(minutes)) + '分' + time
+        if hours:
+            time = str(int(hours)) + '时' + time
+        return time
+
+    @staticmethod
     def is_chinese(word: Union[str, list]) -> bool:
         """
         判断是否含有中文
         """
+        if not word:
+            return False
         if isinstance(word, list):
             word = " ".join(word)
         chn = re.compile(r'[\u4e00-\u9fff]')
@@ -113,6 +138,13 @@ class StringUtils:
         return True
 
     @staticmethod
+    def is_english_word(word: str) -> bool:
+        """
+        判断是否为英文单词，有空格时返回False
+        """
+        return word.encode().isalpha()
+
+    @staticmethod
     def str_int(text: str) -> int:
         """
         web字符串转int
@@ -154,7 +186,7 @@ class StringUtils:
         忽略特殊字符
         """
         # 需要忽略的特殊字符
-        CONVERT_EMPTY_CHARS = r"[、.。,，·:：;；!！'’\"“”()（）\[\]【】「」\-——\+\|\\_/&#～~]"
+        CONVERT_EMPTY_CHARS = r"[、.。,，·:：;；!！'’\"“”()（）\[\]【】「」\-—―\+\|\\_/&#～~]"
         if not text:
             return text
         if not isinstance(text, list):
@@ -238,9 +270,15 @@ class StringUtils:
         """
         if not url:
             return ""
+        for domain in _special_domains:
+            if domain in url:
+                return domain
         _, netloc = StringUtils.get_url_netloc(url)
         if netloc:
-            return ".".join(netloc.split(".")[-2:])
+            locs = netloc.split(".")
+            if len(locs) > 3:
+                return netloc
+            return ".".join(locs[-2:])
         return ""
 
     @staticmethod
@@ -257,6 +295,18 @@ class StringUtils:
         if len(netloc) >= 2:
             return netloc[-2]
         return netloc[0]
+
+    @staticmethod
+    def get_url_host(url: str) -> str:
+        """
+        获取URL的一级域名
+        """
+        if not url:
+            return ""
+        _, netloc = StringUtils.get_url_netloc(url)
+        if not netloc:
+            return ""
+        return netloc.split(".")[-2]
 
     @staticmethod
     def get_base_url(url: str) -> str:
@@ -332,6 +382,21 @@ class StringUtils:
         except Exception as e:
             print(str(e))
             return timestamp
+
+    @staticmethod
+    def str_to_timestamp(date_str: str) -> float:
+        """
+        日期转时间戳
+        :param date_str:
+        :return:
+        """
+        if not date_str:
+            return 0
+        try:
+            return dateparser.parse(date_str).timestamp()
+        except Exception as e:
+            print(str(e))
+            return 0
 
     @staticmethod
     def to_bool(text: str, default_val: bool = False) -> bool:
@@ -413,21 +478,31 @@ class StringUtils:
         return curr + format(amount, ",")
 
     @staticmethod
-    def count_words(s: str) -> int:
+    def count_words(text: str) -> int:
         """
-        计算字符串中包含的单词数量，只适用于简单的单行文本
-        :param s: 要计算的字符串
-        :return: 字符串中包含的单词数量
+        计算字符串中包含的单词或汉字的数量，需要兼容中英文混合的情况
+        :param text: 要计算的字符串
+        :return: 字符串中包含的词数量
         """
-        # 匹配英文单词
-        if re.match(r'^[A-Za-z0-9\s]+$', s):
-            # 如果是英文字符串，则按空格分隔单词，并计算单词数量
-            num_words = len(s.split())
-        else:
-            # 如果不是英文字符串，则计算字符数量
-            num_words = len(s)
+        if not text:
+            return 0
+        # 使用正则表达式匹配汉字和英文单词
+        chinese_pattern = '[\u4e00-\u9fa5]'
+        english_pattern = '[a-zA-Z]+'
 
-        return num_words
+        # 匹配汉字和英文单词
+        chinese_matches = re.findall(chinese_pattern, text)
+        english_matches = re.findall(english_pattern, text)
+
+        # 过滤掉空格和数字
+        chinese_words = [word for word in chinese_matches if word.isalpha()]
+        english_words = [word for word in english_matches if word.isalpha()]
+
+        # 计算汉字和英文单词的数量
+        chinese_count = len(chinese_words)
+        english_count = len(english_words)
+
+        return chinese_count + english_count
 
     @staticmethod
     def split_text(text: str, max_length: int) -> Generator:
@@ -541,20 +616,30 @@ class StringUtils:
         return reparse
 
     @staticmethod
-    def get_domain_address(address: str) -> Tuple[Optional[str], Optional[int]]:
+    def get_domain_address(address: str, prefix: bool = True) -> Tuple[Optional[str], Optional[int]]:
         """
         从地址中获取域名和端口号
+        :param address: 地址
+        :param prefix：返回域名是否要包含协议前缀
         """
         if not address:
             return None, None
-        if not address.startswith("http"):
+        # 去掉末尾的/
+        address = address.rstrip("/")
+        if prefix and not address.startswith("http"):
+            # 如果需要包含协议前缀，但地址不包含协议前缀，则添加
             address = "http://" + address
+        elif not prefix and address.startswith("http"):
+            # 如果不需要包含协议前缀，但地址包含协议前缀，则去掉
+            address = address.split("://")[-1]
+        # 拆分域名和端口号
         parts = address.split(":")
         if len(parts) > 3:
             # 处理不希望包含多个冒号的情况（除了协议后的冒号）
             return None, None
-        domain = ":".join(parts[:-1])
-        # 检查是否包含端口号
+        # 不含端口地址
+        domain = ":".join(parts[:-1]).rstrip('/')
+        # 端口号
         try:
             port = int(parts[-1])
         except ValueError:
@@ -593,3 +678,113 @@ class StringUtils:
             result.append(f"{start}-{end}")
 
         return ",".join(result)
+
+    @staticmethod
+    def format_ep(nums: List[int]) -> str:
+        """
+        将剧集列表格式化为连续区间
+        """
+        if not nums:
+            return ""
+        if len(nums) == 1:
+            return f"E{nums[0]:02d}"
+        # 将数组升序排序
+        nums.sort()
+        formatted_ranges = []
+        start = nums[0]
+        end = nums[0]
+
+        for i in range(1, len(nums)):
+            if nums[i] == end + 1:
+                end = nums[i]
+            else:
+                if start == end:
+                    formatted_ranges.append(f"E{start:02d}")
+                else:
+                    formatted_ranges.append(f"E{start:02d}-E{end:02d}")
+                start = end = nums[i]
+
+        if start == end:
+            formatted_ranges.append(f"E{start:02d}")
+        else:
+            formatted_ranges.append(f"E{start:02d}-E{end:02d}")
+
+        formatted_string = "、".join(formatted_ranges)
+        return formatted_string
+
+    @staticmethod
+    def is_number(text: str) -> bool:
+        """
+        判断字符是否为可以转换为整数或者浮点数
+        """
+        if not text:
+            return False
+        try:
+            float(text)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def find_common_prefix(str1: str, str2: str) -> str:
+        if not str1 or not str2:
+            return ''
+        common_prefix = []
+        min_len = min(len(str1), len(str2))
+
+        for i in range(min_len):
+            if str1[i] == str2[i]:
+                common_prefix.append(str1[i])
+            else:
+                break
+
+        return ''.join(common_prefix)
+
+    @staticmethod
+    def compare_version(v1: str, v2: str) -> int:
+        """
+        比较两个版本号的大小，v1 > v2时返回1，v1 < v2时返回-1，v1 = v2时返回0
+        """
+        if not v1 or not v2:
+            return 0
+        v1 = v1.replace('v', '')
+        v2 = v2.replace('v', '')
+        v1 = [int(x) for x in v1.split('.')]
+        v2 = [int(x) for x in v2.split('.')]
+        for i in range(min(len(v1), len(v2))):
+            if v1[i] > v2[i]:
+                return 1
+            elif v1[i] < v2[i]:
+                return -1
+        if len(v1) > len(v2):
+            return 1
+        elif len(v1) < len(v2):
+            return -1
+        else:
+            return 0
+
+    @staticmethod
+    def diff_time_str(time_str: str):
+        """
+        输入YYYY-MM-DD HH24:MI:SS 格式的时间字符串，返回距离现在的剩余时间：xx天xx小时xx分钟
+        """
+        if not time_str:
+            return ''
+        try:
+            time_obj = datetime.datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return time_str
+        now = datetime.datetime.now()
+        diff = time_obj - now
+        diff_seconds = diff.seconds
+        diff_days = diff.days
+        diff_hours = diff_seconds // 3600
+        diff_minutes = (diff_seconds % 3600) // 60
+        if diff_days > 0:
+            return f'{diff_days}天{diff_hours}小时{diff_minutes}分钟'
+        elif diff_hours > 0:
+            return f'{diff_hours}小时{diff_minutes}分钟'
+        elif diff_minutes > 0:
+            return f'{diff_minutes}分钟'
+        else:
+            return ''

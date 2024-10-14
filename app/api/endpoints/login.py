@@ -1,8 +1,7 @@
-import random
 from datetime import timedelta
-from typing import Any
+from typing import Any, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -14,87 +13,92 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db import get_db
 from app.db.models.user import User
+from app.helper.sites import SitesHelper
 from app.log import logger
-from app.utils.http import RequestUtils
+from app.utils.web import WebUtils
 
 router = APIRouter()
 
 
 @router.post("/access-token", summary="获取token", response_model=schemas.Token)
 async def login_access_token(
-        db: Session = Depends(get_db), form_data: OAuth2PasswordRequestForm = Depends()
+        db: Session = Depends(get_db),
+        form_data: OAuth2PasswordRequestForm = Depends(),
+        otp_password: str = Form(None)
 ) -> Any:
     """
     获取认证Token
     """
     # 检查数据库
-    user = User.authenticate(
+    success, user = User.authenticate(
         db=db,
         name=form_data.username,
-        password=form_data.password
+        password=form_data.password,
+        otp_password=otp_password
     )
-    if not user:
-        # 请求协助认证
-        logger.warn("登录用户本地不匹配，尝试辅助认证 ...")
-        token = UserChain().user_authenticate(form_data.username, form_data.password)
-        if not token:
-            raise HTTPException(status_code=401, detail="用户名或密码不正确")
-        else:
-            logger.info(f"辅助认证成功，用户信息: {token}")
-            # 加入用户信息表
-            user = User.get_by_name(db=db, name=form_data.username)
-            if not user:
-                logger.info(f"用户不存在，创建用户: {form_data.username}")
+    if not success:
+        # 认证不成功
+        if not user:
+            # 未找到用户，请求协助认证
+            logger.warn(f"登录用户 {form_data.username} 本地不存在，尝试辅助认证 ...")
+            token = UserChain().user_authenticate(form_data.username, form_data.password)
+            if not token:
+                logger.warn(f"用户 {form_data.username} 登录失败！")
+                raise HTTPException(status_code=401, detail="用户名、密码、二次校验码不正确")
+            else:
+                logger.info(f"用户 {form_data.username} 辅助认证成功，用户信息: {token}，以普通用户登录...")
+                # 加入用户信息表
+                logger.info(f"创建用户: {form_data.username}")
                 user = User(name=form_data.username, is_active=True,
                             is_superuser=False, hashed_password=get_password_hash(token))
                 user.create(db)
-    elif not user.is_active:
+        else:
+            # 用户存在，但认证失败
+            logger.warn(f"用户 {user.name} 登录失败！")
+            raise HTTPException(status_code=401, detail="用户名、密码或二次校验码不正确")
+    elif user and not user.is_active:
         raise HTTPException(status_code=403, detail="用户未启用")
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    logger.info(f"用户 {user.name} 登录成功！")
+    level = SitesHelper().auth_level
     return schemas.Token(
         access_token=security.create_access_token(
-            user.id, expires_delta=access_token_expires
+            userid=user.id,
+            username=user.name,
+            super_user=user.is_superuser,
+            expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+            level=level
         ),
         token_type="bearer",
+        super_user=user.is_superuser,
+        user_name=user.name,
+        avatar=user.avatar,
+        level=level
     )
 
 
-@router.get("/bing", summary="Bing每日壁纸", response_model=schemas.Response)
-def bing_wallpaper() -> Any:
+@router.get("/wallpaper", summary="登录页面电影海报", response_model=schemas.Response)
+def wallpaper() -> Any:
     """
-    获取Bing每日壁纸
+    获取登录页面电影海报
     """
-    url = "https://cn.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1"
-    try:
-        resp = RequestUtils(timeout=5).get_res(url)
-    except Exception as err:
-        print(str(err))
-        return schemas.Response(success=False)
-    if resp and resp.status_code == 200:
-        try:
-            result = resp.json()
-            if isinstance(result, dict):
-                for image in result.get('images') or []:
-                    return schemas.Response(success=False,
-                                            message=f"https://cn.bing.com{image.get('url')}" if 'url' in image else '')
-        except Exception as err:
-            print(str(err))
+    if settings.WALLPAPER == "tmdb":
+        url = TmdbChain().get_random_wallpager()
+    else:
+        url = WebUtils.get_bing_wallpaper()
+    if url:
+        return schemas.Response(
+            success=True,
+            message=url
+        )
     return schemas.Response(success=False)
 
 
-@router.get("/tmdb", summary="TMDB电影海报", response_model=schemas.Response)
-def tmdb_wallpaper() -> Any:
+@router.get("/wallpapers", summary="登录页面电影海报列表", response_model=List[str])
+def wallpapers() -> Any:
     """
-    获取TMDB电影海报
+    获取登录页面电影海报
     """
-    infos = TmdbChain().tmdb_trending()
-    if infos:
-        # 随机一个电影
-        while True:
-            info = random.choice(infos)
-            if info and info.get("backdrop_path"):
-                return schemas.Response(
-                    success=True,
-                    message=f"https://image.tmdb.org/t/p/original{info.get('backdrop_path')}"
-                )
-    return schemas.Response(success=False)
+    if settings.WALLPAPER == "tmdb":
+        return TmdbChain().get_trending_wallpapers()
+    else:
+        return WebUtils.get_bing_wallpapers()

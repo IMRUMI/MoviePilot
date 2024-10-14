@@ -25,10 +25,26 @@ class WordsMatcher(metaclass=Singleton):
         # 读取自定义识别词
         words: List[str] = self.systemconfig.get(SystemConfigKey.CustomIdentifiers) or []
         for word in words:
-            if not word:
+            if not word or word.startswith("#"):
                 continue
             try:
-                if word.count(" => "):
+                if word.count(" => ") and word.count(" && ") and word.count(" >> ") and word.count(" <> "):
+                    # 替换词
+                    thc = str(re.findall(r'(.*?)\s*=>', word)[0]).strip()
+                    # 被替换词
+                    bthc = str(re.findall(r'=>\s*(.*?)\s*&&', word)[0]).strip()
+                    # 集偏移前字段
+                    pyq = str(re.findall(r'&&\s*(.*?)\s*<>', word)[0]).strip()
+                    # 集偏移后字段
+                    pyh = str(re.findall(r'<>(.*?)\s*>>', word)[0]).strip()
+                    # 集偏移
+                    offsets = str(re.findall(r'>>\s*(.*?)$', word)[0]).strip()
+                    # 替换词
+                    title, message, state = self.__replace_regex(title, thc, bthc)
+                    if state:
+                        # 替换词成功再进行集偏移
+                        title, message, state = self.__episode_offset(title, pyq, pyh, offsets)
+                elif word.count(" => "):
                     # 替换词
                     strings = word.split(" => ")
                     title, message, state = self.__replace_regex(title, strings[0], strings[1])
@@ -37,18 +53,18 @@ class WordsMatcher(metaclass=Singleton):
                     strings = word.split(" <> ")
                     offsets = strings[1].split(" >> ")
                     strings[1] = offsets[0]
-                    title, message, state = self.__episode_offset(title, strings[0], strings[1],
-                                                                  offsets[1])
+                    title, message, state = self.__episode_offset(title, strings[0], strings[1], offsets[1])
                 else:
                     # 屏蔽词
+                    if not word.strip():
+                        continue
                     title, message, state = self.__replace_regex(title, word, "")
 
                 if state:
                     appley_words.append(word)
-                else:
-                    logger.error(f"自定义识别词替换失败：{message}")
+
             except Exception as err:
-                print(str(err))
+                logger.warn(f"自定义识别词 {word} 预处理标题失败：{str(err)} - 标题：{title}")
 
         return title, appley_words
 
@@ -63,7 +79,7 @@ class WordsMatcher(metaclass=Singleton):
             else:
                 return re.sub(r'%s' % replaced, r'%s' % replace, title), "", True
         except Exception as err:
-            print(str(err))
+            logger.warn(f"自定义识别词正则替换失败：{str(err)} - 标题：{title}，被替换词：{replaced}，替换词：{replace}")
             return title, str(err), False
 
     @staticmethod
@@ -115,5 +131,5 @@ class WordsMatcher(metaclass=Singleton):
                 title = re.sub(episode_offset_re, r'%s' % episode_num[1], title)
             return title, "", True
         except Exception as err:
-            print(str(err))
+            logger.warn(f"自定义识别词集数偏移失败：{str(err)} - 标题：{title}，前定位词：{front}，后定位词：{back}，偏移量：{offset}")
             return title, str(err), False

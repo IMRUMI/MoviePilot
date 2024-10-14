@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union
 
 from pydantic import BaseModel
 
@@ -26,7 +26,7 @@ class MetaInfo(BaseModel):
     # 年份
     year: Optional[str] = None
     # 总季数
-    total_seasons: Optional[int] = 0
+    total_season: Optional[int] = 0
     # 识别的开始季 数字
     begin_season: Optional[int] = None
     # 识别的结束季 数字
@@ -63,15 +63,19 @@ class MediaInfo(BaseModel):
     """
     识别媒体信息
     """
+    # 来源：themoviedb、douban、bangumi
+    source: Optional[str] = None
     # 类型 电影、电视剧
     type: Optional[str] = None
     # 媒体标题
     title: Optional[str] = None
+    # 英文标题
+    en_title: Optional[str] = None
     # 年份
     year: Optional[str] = None
     # 标题（年份）
     title_year: Optional[str] = None
-    # 季
+    # 当前指定季，如有
     season: Optional[int] = None
     # TMDB ID
     tmdb_id: Optional[int] = None
@@ -81,6 +85,8 @@ class MediaInfo(BaseModel):
     tvdb_id: Optional[str] = None
     # 豆瓣ID
     douban_id: Optional[str] = None
+    # Bangumi ID
+    bangumi_id: Optional[int] = None
     # 媒体原语种
     original_language: Optional[str] = None
     # 媒体原发行标题
@@ -92,7 +98,7 @@ class MediaInfo(BaseModel):
     # 海报图片
     poster_path: Optional[str] = None
     # 评分
-    vote_average: Optional[int] = 0
+    vote_average: Optional[float] = 0
     # 描述
     overview: Optional[str] = None
     # 二级分类
@@ -146,6 +152,8 @@ class MediaInfo(BaseModel):
     status: Optional[str] = None
     # 标签
     tagline: Optional[str] = None
+    # 风格ID
+    genre_ids: Optional[list] = []
     # 评价数量
     vote_count: Optional[int] = 0
     # 流行度
@@ -194,6 +202,8 @@ class TorrentInfo(BaseModel):
     pubdate: Optional[str] = None
     # 已过时间
     date_elapsed: Optional[str] = None
+    # 免费截止时间
+    freedate: Optional[str] = None
     # 上传因子
     uploadvolumefactor: Optional[float] = None
     # 下载因子
@@ -206,6 +216,8 @@ class TorrentInfo(BaseModel):
     pri_order: Optional[int] = 0
     # 促销
     volume_factor: Optional[str] = None
+    # 剩余免费时间
+    freedate_diff: Optional[str] = None
 
 
 class Context(BaseModel):
@@ -218,3 +230,39 @@ class Context(BaseModel):
     media_info: Optional[MediaInfo] = None
     # 种子信息
     torrent_info: Optional[TorrentInfo] = None
+
+
+class MediaPerson(BaseModel):
+    """
+    媒体人物信息
+    """
+    # 来源：themoviedb、douban、bangumi
+    source: Optional[str] = None
+    # 公共
+    id: Optional[int] = None
+    type: Optional[Union[str, int]] = 1
+    name: Optional[str] = None
+    character: Optional[str] = None
+    images: Optional[dict] = {}
+    # themoviedb
+    profile_path: Optional[str] = None
+    gender: Optional[Union[str, int]] = None
+    original_name: Optional[str] = None
+    credit_id: Optional[str] = None
+    also_known_as: Optional[list] = []
+    birthday: Optional[str] = None
+    deathday: Optional[str] = None
+    imdb_id: Optional[str] = None
+    known_for_department: Optional[str] = None
+    place_of_birth: Optional[str] = None
+    popularity: Optional[float] = None
+    biography: Optional[str] = None
+    # douban
+    roles: Optional[list] = []
+    title: Optional[str] = None
+    url: Optional[str] = None
+    avatar: Optional[Union[str, dict]] = None
+    latin_name: Optional[str] = None
+    # bangumi
+    career: Optional[list] = []
+    relation: Optional[str] = None

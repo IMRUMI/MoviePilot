@@ -16,8 +16,21 @@ class SlackModule(_ModuleBase):
     def init_module(self) -> None:
         self.slack = Slack()
 
+    @staticmethod
+    def get_name() -> str:
+        return "Slack"
+
     def stop(self):
         self.slack.stop()
+
+    def test(self) -> Tuple[bool, str]:
+        """
+        测试模块连接性
+        """
+        state = self.slack.get_state()
+        if state:
+            return True, ""
+        return False, "Slack未就续，请检查参数设置和网络连接"
 
     def init_setting(self) -> Tuple[str, Union[str, bool]]:
         return "MESSAGER", "slack"
@@ -151,7 +164,7 @@ class SlackModule(_ModuleBase):
         try:
             msg_json: dict = json.loads(body)
         except Exception as err:
-            logger.debug(f"解析Slack消息失败：{err}")
+            logger.debug(f"解析Slack消息失败：{str(err)}")
             return None
         if msg_json:
             if msg_json.get("type") == "message":
@@ -182,14 +195,14 @@ class SlackModule(_ModuleBase):
         return None
 
     @checkMessage(MessageChannel.Slack)
-    def post_message(self, message: Notification) -> Optional[bool]:
+    def post_message(self, message: Notification) -> None:
         """
         发送消息
         :param message: 消息
         :return: 成功或失败
         """
-        return self.slack.send_msg(title=message.title, text=message.text,
-                                   image=message.image, userid=message.userid)
+        self.slack.send_msg(title=message.title, text=message.text,
+                            image=message.image, userid=message.userid, link=message.link)
 
     @checkMessage(MessageChannel.Slack)
     def post_medias_message(self, message: Notification, medias: List[MediaInfo]) -> Optional[bool]:

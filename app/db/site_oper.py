@@ -19,7 +19,7 @@ class SiteOper(DbOper):
             return True, "新增站点成功"
         return False, "站点已存在"
 
-    def get(self, sid: int):
+    def get(self, sid: int) -> Site:
         """
         查询单个站点
         """
@@ -31,7 +31,13 @@ class SiteOper(DbOper):
         """
         return Site.list(self._db)
 
-    def list_active(self):
+    def list_order_by_pri(self) -> List[Site]:
+        """
+        获取站点列表
+        """
+        return Site.list_order_by_pri(self._db)
+
+    def list_active(self) -> List[Site]:
         """
         按状态获取站点列表
         """
@@ -41,9 +47,9 @@ class SiteOper(DbOper):
         """
         删除站点
         """
-        return Site.delete(self._db, sid)
+        Site.delete(self._db, sid)
 
-    def update(self, sid: int, payload: dict):
+    def update(self, sid: int, payload: dict) -> Site:
         """
         更新站点
         """
@@ -56,6 +62,12 @@ class SiteOper(DbOper):
         按域名获取站点
         """
         return Site.get_by_domain(self._db, domain)
+
+    def get_domains_by_ids(self, ids: List[int]) -> List[str]:
+        """
+        按ID获取站点域名
+        """
+        return Site.get_domains_by_ids(self._db, ids)
 
     def exists(self, domain: str) -> bool:
         """
@@ -74,3 +86,15 @@ class SiteOper(DbOper):
             "cookie": cookies
         })
         return True, "更新站点Cookie成功"
+
+    def update_rss(self, domain: str, rss: str) -> Tuple[bool, str]:
+        """
+        更新站点rss
+        """
+        site = Site.get_by_domain(self._db, domain)
+        if not site:
+            return False, "站点不存在"
+        site.update(self._db, {
+            "rss": rss
+        })
+        return True, "更新站点RSS地址成功"

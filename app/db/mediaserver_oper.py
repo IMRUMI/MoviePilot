@@ -1,7 +1,9 @@
 import json
 from typing import Optional
 
-from app.db import DbOper, SessionLocal
+from sqlalchemy.orm import Session
+
+from app.db import DbOper
 from app.db.models.mediaserver import MediaServerItem
 
 
@@ -10,7 +12,7 @@ class MediaServerOper(DbOper):
     媒体服务器数据管理
     """
 
-    def __init__(self, db=SessionLocal()):
+    def __init__(self, db: Session = None):
         super().__init__(db)
 
     def add(self, **kwargs) -> bool:
@@ -23,7 +25,7 @@ class MediaServerOper(DbOper):
             return True
         return False
 
-    def empty(self, server: str):
+    def empty(self, server: Optional[str] = None):
         """
         清空媒体服务器数据
         """
@@ -37,10 +39,12 @@ class MediaServerOper(DbOper):
             # 优先按TMDBID查
             item = MediaServerItem.exist_by_tmdbid(self._db, tmdbid=kwargs.get("tmdbid"),
                                                    mtype=kwargs.get("mtype"))
-        else:
+        elif kwargs.get("title"):
             # 按标题、类型、年份查
             item = MediaServerItem.exists_by_title(self._db, title=kwargs.get("title"),
                                                    mtype=kwargs.get("mtype"), year=kwargs.get("year"))
+        else:
+            return None
         if not item:
             return None
 
@@ -52,3 +56,12 @@ class MediaServerOper(DbOper):
             if kwargs.get("season") not in seasoninfo.keys():
                 return None
         return item
+
+    def get_item_id(self, **kwargs) -> Optional[str]:
+        """
+        获取媒体服务器数据ID
+        """
+        item = self.exists(**kwargs)
+        if not item:
+            return None
+        return str(item.item_id)

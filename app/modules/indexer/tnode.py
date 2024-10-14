@@ -18,6 +18,7 @@ class TNodeSpider:
     _ua = None
     _token = None
     _size = 100
+    _timeout = 15
     _searchurl = "%sapi/torrent/advancedSearch"
     _downloadurl = "%sapi/torrent/download/%s"
     _pageurl = "%storrent/info/%s"
@@ -32,6 +33,7 @@ class TNodeSpider:
                 self._proxy = settings.PROXY
             self._cookie = indexer.get('cookie')
             self._ua = indexer.get('ua')
+            self._timeout = indexer.get('timeout') or 15
         self.init_config()
 
     def init_config(self):
@@ -43,7 +45,7 @@ class TNodeSpider:
         res = RequestUtils(ua=self._ua,
                            cookies=self._cookie,
                            proxies=self._proxy,
-                           timeout=15).get_res(url=self._domain)
+                           timeout=self._timeout).get_res(url=self._domain)
         if res and res.status_code == 200:
             csrf_token = re.search(r'<meta name="x-csrf-token" content="(.+?)">', res.text)
             if csrf_token:
@@ -53,10 +55,11 @@ class TNodeSpider:
         if not self._token:
             logger.warn(f"{self._name} 未获取到token，无法搜索")
             return True, []
+        search_type = "imdbid" if (keyword and keyword.startswith('tt')) else "title"
         params = {
             "page": int(page) + 1,
             "size": self._size,
-            "type": "title",
+            "type": search_type,
             "keyword": keyword or "",
             "sorter": "id",
             "order": "desc",
@@ -76,14 +79,13 @@ class TNodeSpider:
             },
             cookies=self._cookie,
             proxies=self._proxy,
-            timeout=30
+            timeout=self._timeout
         ).post_res(url=self._searchurl, json=params)
         torrents = []
         if res and res.status_code == 200:
             results = res.json().get('data', {}).get("torrents") or []
             for result in results:
                 torrent = {
-                    'site': self._indexerid,
                     'title': result.get('title'),
                     'description': result.get('subtitle'),
                     'enclosure': self._downloadurl % (self._domain, result.get('id')),

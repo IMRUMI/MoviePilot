@@ -1,12 +1,14 @@
 import pickle
 import random
 import time
+import traceback
 from pathlib import Path
 from threading import RLock
 from typing import Optional
 
 from app.core.config import settings
 from app.core.meta import MetaBase
+from app.log import logger
 from app.utils.singleton import Singleton
 from app.schemas.types import MediaType
 
@@ -48,7 +50,7 @@ class TmdbCache(metaclass=Singleton):
         """
         获取缓存KEY
         """
-        return f"[{meta.type.value if meta.type else '未知'}]{meta.name}-{meta.year}-{meta.begin_season}"
+        return f"[{meta.type.value if meta.type else '未知'}]{meta.name or meta.tmdbid}-{meta.year}-{meta.begin_season}"
 
     def get(self, meta: MetaBase):
         """
@@ -118,7 +120,7 @@ class TmdbCache(metaclass=Singleton):
                 return data
             return {}
         except Exception as e:
-            print(str(e))
+            logger.error(f'加载缓存失败：{str(e)} - {traceback.format_exc()}')
             return {}
 
     def update(self, meta: MetaBase, info: dict) -> None:
@@ -144,7 +146,8 @@ class TmdbCache(metaclass=Singleton):
                         "backdrop_path": info.get("backdrop_path"),
                         CACHE_EXPIRE_TIMESTAMP_STR: int(time.time()) + EXPIRE_TIMESTAMP
                     }
-            else:
+            elif info is not None:
+                # None时不缓存，此时代表网络错误，允许重复请求
                 self._meta_data[self.__get_key(meta)] = {'id': 0}
 
     def save(self, force: bool = False) -> None:
@@ -182,7 +185,7 @@ class TmdbCache(metaclass=Singleton):
                         new_meta_data.pop(k)
         else:
             count = 0
-            keys = random.sample(new_meta_data.keys(), 25)
+            keys = random.sample(sorted(new_meta_data.keys()), 25)
             for k in keys:
                 info = new_meta_data.get(k)
                 expire = info.get(CACHE_EXPIRE_TIMESTAMP_STR)

@@ -1,8 +1,9 @@
 import re
 import threading
+import uuid
 from pathlib import Path
 from threading import Event
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 import telebot
 from telebot import apihelper
@@ -12,14 +13,14 @@ from app.core.config import settings
 from app.core.context import MediaInfo, Context
 from app.core.metainfo import MetaInfo
 from app.log import logger
+from app.utils.common import retry
 from app.utils.http import RequestUtils
-from app.utils.singleton import Singleton
 from app.utils.string import StringUtils
 
 apihelper.proxy = settings.PROXY
 
 
-class Telegram(metaclass=Singleton):
+class Telegram:
     _ds_url = f"http://127.0.0.1:{settings.PORT}/api/v1/message?token={settings.API_TOKEN}"
     _event = Event()
     _bot: telebot.TeleBot = None
@@ -52,22 +53,30 @@ class Telegram(metaclass=Singleton):
                 定义线程函数来运行 infinity_polling
                 """
                 try:
-                    _bot.infinity_polling(long_polling_timeout=10)
+                    _bot.infinity_polling(long_polling_timeout=30, logger_level=None)
                 except Exception as err:
-                    logger.error(f"Telegram消息接收服务异常：{err}")
+                    logger.error(f"Telegram消息接收服务异常：{str(err)}")
 
             # 启动线程来运行 infinity_polling
             self._polling_thread = threading.Thread(target=run_polling)
             self._polling_thread.start()
             logger.info("Telegram消息接收服务启动")
 
-    def send_msg(self, title: str, text: str = "", image: str = "", userid: str = "") -> Optional[bool]:
+    def get_state(self) -> bool:
+        """
+        获取状态
+        """
+        return self._bot is not None
+
+    def send_msg(self, title: str, text: str = "", image: str = "",
+                 userid: str = "", link: str = None) -> Optional[bool]:
         """
         发送Telegram消息
         :param title: 消息标题
         :param text: 消息内容
         :param image: 消息图片地址
         :param userid: 用户ID，如有则只发消息给该用户
+        :param link: 跳转链接
         :userid: 发送消息的目标用户ID，为空则发给管理员
         """
         if not self._telegram_token or not self._telegram_chat_id:
@@ -79,9 +88,14 @@ class Telegram(metaclass=Singleton):
 
         try:
             if text:
+                # 对text进行Markdown特殊字符转义
+                text = re.sub(r"([_`])", r"\\\1", text)
                 caption = f"*{title}*\n{text}"
             else:
                 caption = f"*{title}*"
+
+            if link:
+                caption = f"{caption}\n[查看详情]({link})"
 
             if userid:
                 chat_id = userid
@@ -94,7 +108,8 @@ class Telegram(metaclass=Singleton):
             logger.error(f"发送消息失败：{msg_e}")
             return False
 
-    def send_meidas_msg(self, medias: List[MediaInfo], userid: str = "", title: str = "") -> Optional[bool]:
+    def send_meidas_msg(self, medias: List[MediaInfo], userid: str = "",
+                        title: str = "", link: str = None) -> Optional[bool]:
         """
         发送媒体列表消息
         """
@@ -121,6 +136,9 @@ class Telegram(metaclass=Singleton):
                                                           f"类型：{media.type.value}")
                 index += 1
 
+            if link:
+                caption = f"{caption}\n[查看详情]({link})"
+
             if userid:
                 chat_id = userid
             else:
@@ -133,7 +151,7 @@ class Telegram(metaclass=Singleton):
             return False
 
     def send_torrents_msg(self, torrents: List[Context],
-                          userid: str = "", title: str = "") -> Optional[bool]:
+                          userid: str = "", title: str = "", link: str = None) -> Optional[bool]:
         """
         发送列表消息
         """
@@ -153,15 +171,17 @@ class Telegram(metaclass=Singleton):
                 link = torrent.page_url
                 title = f"{meta.season_episode} " \
                         f"{meta.resource_term} " \
+                        f"{meta.video_term} " \
                         f"{meta.release_group}"
                 title = re.sub(r"\s+", " ", title).strip()
                 free = torrent.volume_factor
                 seeder = f"{torrent.seeders}↑"
-                description = torrent.description
                 caption = f"{caption}\n{index}.【{site_name}】[{title}]({link}) " \
-                          f"{StringUtils.str_filesize(torrent.size)} {free} {seeder}\n" \
-                          f"_{description}_"
+                          f"{StringUtils.str_filesize(torrent.size)} {free} {seeder}"
                 index += 1
+
+            if link:
+                caption = f"{caption}\n[查看详情]({link})"
 
             if userid:
                 chat_id = userid
@@ -175,30 +195,46 @@ class Telegram(metaclass=Singleton):
             logger.error(f"发送消息失败：{msg_e}")
             return False
 
+    @retry(Exception, logger=logger)
     def __send_request(self, userid: str = None, image="", caption="") -> bool:
         """
         向Telegram发送报文
         """
 
         if image:
-            req = RequestUtils(proxies=settings.PROXY).get_res(image)
-            if req and req.content:
-                image_file = Path(settings.TEMP_PATH) / Path(image).name
-                image_file.write_bytes(req.content)
+            res = RequestUtils(proxies=settings.PROXY).get_res(image)
+            if res is None:
+                raise Exception("获取图片失败")
+            if res.content:
+                # 使用随机标识构建图片文件的完整路径，并写入图片内容到文件
+                image_file = Path(settings.TEMP_PATH) / str(uuid.uuid4())
+                image_file.write_bytes(res.content)
                 photo = InputFile(image_file)
+                # 发送图片到Telegram
                 ret = self._bot.send_photo(chat_id=userid or self._telegram_chat_id,
                                            photo=photo,
                                            caption=caption,
                                            parse_mode="Markdown")
+                if ret is None:
+                    raise Exception("发送图片消息失败")
                 if ret:
                     return True
-        ret = self._bot.send_message(chat_id=userid or self._telegram_chat_id,
-                                     text=caption,
-                                     parse_mode="Markdown")
-
+        # 按4096分段循环发送消息
+        ret = None
+        if len(caption) > 4095:
+            for i in range(0, len(caption), 4095):
+                ret = self._bot.send_message(chat_id=userid or self._telegram_chat_id,
+                                             text=caption[i:i + 4095],
+                                             parse_mode="Markdown")
+        else:
+            ret = self._bot.send_message(chat_id=userid or self._telegram_chat_id,
+                                         text=caption,
+                                         parse_mode="Markdown")
+        if ret is None:
+            raise Exception("发送文本消息失败")
         return True if ret else False
 
-    def register_commands(self, commands: dict):
+    def register_commands(self, commands: Dict[str, dict]):
         """
         注册菜单命令
         """

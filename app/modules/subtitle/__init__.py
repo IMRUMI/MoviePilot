@@ -28,21 +28,35 @@ class SubtitleModule(_ModuleBase):
     def init_module(self) -> None:
         pass
 
+    @staticmethod
+    def get_name() -> str:
+        return "站点字幕"
+
     def init_setting(self) -> Tuple[str, Union[str, bool]]:
         pass
 
     def stop(self) -> None:
         pass
 
-    def download_added(self, context: Context, torrent_path: Path, download_dir: Path) -> None:
+    def test(self):
+        pass
+
+    def download_added(self, context: Context, download_dir: Path, torrent_path: Path = None) -> None:
         """
         添加下载任务成功后，从站点下载字幕，保存到下载目录
         :param context:  上下文，包括识别信息、媒体信息、种子信息
-        :param torrent_path:  种子文件地址
         :param download_dir:  下载目录
+        :param torrent_path:  种子文件地址
         :return: None，该方法可被多个模块同时处理
         """
-        # 种子信息
+        if not settings.DOWNLOAD_SUBTITLE:
+            return None
+
+        # 没有种子文件不处理
+        if not torrent_path:
+            return
+
+        # 没有详情页不处理
         torrent = context.torrent_info
         if not torrent.page_url:
             return
@@ -50,19 +64,16 @@ class SubtitleModule(_ModuleBase):
         logger.info("开始从站点下载字幕：%s" % torrent.page_url)
         # 获取种子信息
         folder_name, _ = TorrentHelper.get_torrent_info(torrent_path)
-
-        download_dir = download_dir / (folder_name or "")
-        # 等待文件或者目录存在
-        for _ in range(10):
+        # 文件保存目录，如果是单文件种子，则folder_name是空，此时文件保存目录就是下载目录
+        download_dir = download_dir / folder_name
+        # 等待目录存在
+        for _ in range(30):
             if download_dir.exists():
                 break
             time.sleep(1)
-        # 目录不存在则创建目录
-        if not download_dir.exists():
+        # 目录仍然不存在，且有文件夹名，则创建目录
+        if not download_dir.exists() and folder_name:
             download_dir.mkdir(parents=True, exist_ok=True)
-        # 不是目录说明是单文件种子，直接使用下载目录
-        if download_dir.is_file():
-            download_dir = download_dir.parent
         # 读取网站代码
         request = RequestUtils(cookies=torrent.site_cookie, ua=torrent.site_ua)
         res = request.get_res(torrent.page_url)
@@ -106,7 +117,7 @@ class SubtitleModule(_ModuleBase):
                         # 解压文件
                         shutil.unpack_archive(zip_file, zip_path, format='zip')
                         # 遍历转移文件
-                        for sub_file in SystemUtils.list_files_with_extensions(zip_path, settings.RMT_SUBEXT):
+                        for sub_file in SystemUtils.list_files(zip_path, settings.RMT_SUBEXT):
                             target_sub_file = download_dir / sub_file.name
                             if target_sub_file.exists():
                                 logger.info(f"字幕文件已存在：{target_sub_file}")
@@ -118,7 +129,7 @@ class SubtitleModule(_ModuleBase):
                             shutil.rmtree(zip_path)
                             zip_file.unlink()
                         except Exception as err:
-                            logger.error(f"删除临时文件失败：{err}")
+                            logger.error(f"删除临时文件失败：{str(err)}")
                     else:
                         sub_file = settings.TEMP_PATH / file_name
                         # 保存

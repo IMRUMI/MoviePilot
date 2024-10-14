@@ -1,5 +1,5 @@
 import json
-from typing import Optional, Union, List, Tuple, Any
+from typing import Optional, Union, List, Tuple, Any, Dict
 
 from app.core.context import MediaInfo, Context
 from app.core.config import settings
@@ -15,8 +15,21 @@ class TelegramModule(_ModuleBase):
     def init_module(self) -> None:
         self.telegram = Telegram()
 
+    @staticmethod
+    def get_name() -> str:
+        return "Telegram"
+
     def stop(self):
         self.telegram.stop()
+
+    def test(self) -> Tuple[bool, str]:
+        """
+        测试模块连接性
+        """
+        state = self.telegram.get_state()
+        if state:
+            return True, ""
+        return False, "Telegram未就续，请检查参数设置和网络连接"
 
     def init_setting(self) -> Tuple[str, Union[str, bool]]:
         return "MESSAGER", "telegram"
@@ -63,7 +76,7 @@ class TelegramModule(_ModuleBase):
         try:
             message: dict = json.loads(body)
         except Exception as err:
-            logger.debug(f"解析Telegram消息失败：{err}")
+            logger.debug(f"解析Telegram消息失败：{str(err)}")
             return None
         if message:
             text = message.get("text")
@@ -78,28 +91,26 @@ class TelegramModule(_ModuleBase):
                             and str(user_id) not in settings.TELEGRAM_ADMINS.split(',') \
                             and str(user_id) != settings.TELEGRAM_CHAT_ID:
                         self.telegram.send_msg(title="只有管理员才有权限执行此命令", userid=user_id)
-                        return CommingMessage(channel=MessageChannel.Wechat,
-                                              userid=user_id, username=user_id, text="")
+                        return None
                 else:
                     if settings.TELEGRAM_USERS \
                             and not str(user_id) in settings.TELEGRAM_USERS.split(','):
                         logger.info(f"用户{user_id}不在用户白名单中，无法使用此机器人")
                         self.telegram.send_msg(title="你不在用户白名单中，无法使用此机器人", userid=user_id)
-                        return CommingMessage(channel=MessageChannel.Wechat,
-                                              userid=user_id, username=user_id, text="")
+                        return None
                 return CommingMessage(channel=MessageChannel.Telegram,
-                                      userid=user_id, username=user_id, text=text)
+                                      userid=user_id, username=user_name, text=text)
         return None
 
     @checkMessage(MessageChannel.Telegram)
-    def post_message(self, message: Notification) -> Optional[bool]:
+    def post_message(self, message: Notification) -> None:
         """
         发送消息
         :param message: 消息体
         :return: 成功或失败
         """
-        return self.telegram.send_msg(title=message.title, text=message.text,
-                                      image=message.image, userid=message.userid)
+        self.telegram.send_msg(title=message.title, text=message.text,
+                               image=message.image, userid=message.userid, link=message.link)
 
     @checkMessage(MessageChannel.Telegram)
     def post_medias_message(self, message: Notification, medias: List[MediaInfo]) -> Optional[bool]:
@@ -110,7 +121,7 @@ class TelegramModule(_ModuleBase):
         :return: 成功或失败
         """
         return self.telegram.send_meidas_msg(title=message.title, medias=medias,
-                                             userid=message.userid)
+                                             userid=message.userid, link=message.link)
 
     @checkMessage(MessageChannel.Telegram)
     def post_torrents_message(self, message: Notification, torrents: List[Context]) -> Optional[bool]:
@@ -120,9 +131,10 @@ class TelegramModule(_ModuleBase):
         :param torrents: 种子列表
         :return: 成功或失败
         """
-        return self.telegram.send_torrents_msg(title=message.title, torrents=torrents, userid=message.userid)
+        return self.telegram.send_torrents_msg(title=message.title, torrents=torrents,
+                                               userid=message.userid, link=message.link)
 
-    def register_commands(self, commands: dict):
+    def register_commands(self, commands: Dict[str, dict]):
         """
         注册命令，实现这个函数接收系统可用的命令菜单
         :param commands: 命令字典

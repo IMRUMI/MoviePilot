@@ -1,11 +1,10 @@
 from abc import ABCMeta, abstractmethod
 from pathlib import Path
-from typing import Any, List, Dict, Tuple
+from typing import Any, List, Dict, Tuple, Optional
 
 from app.chain import ChainBase
 from app.core.config import settings
 from app.core.event import EventManager
-from app.db.models import Base
 from app.db.plugindata_oper import PluginDataOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.message import MessageHelper
@@ -16,9 +15,7 @@ class PluginChian(ChainBase):
     """
     插件处理链
     """
-
-    def process(self, *args, **kwargs):
-        pass
+    pass
 
 
 class _PluginBase(metaclass=ABCMeta):
@@ -35,7 +32,9 @@ class _PluginBase(metaclass=ABCMeta):
     plugin_name: str = ""
     # 插件描述
     plugin_desc: str = ""
-    
+    # 插件顺序
+    plugin_order: int = 9999
+
     def __init__(self):
         # 插件数据
         self.plugindata = PluginDataOper()
@@ -56,15 +55,23 @@ class _PluginBase(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def get_state(self) -> bool:
+        """
+        获取插件运行状态
+        """
+        pass
+
     @staticmethod
     @abstractmethod
     def get_command() -> List[Dict[str, Any]]:
         """
-        获取插件命令
+        注册插件远程命令
         [{
             "cmd": "/xx",
             "event": EventType.xx,
-            "desc": "xxxx",
+            "desc": "名称",
+            "category": "分类，需要注册到Wechat时必须有分类",
             "data": {}
         }]
         """
@@ -73,7 +80,7 @@ class _PluginBase(metaclass=ABCMeta):
     @abstractmethod
     def get_api(self) -> List[Dict[str, Any]]:
         """
-        获取插件API
+        注册插件API
         [{
             "path": "/xx",
             "endpoint": self.xxx,
@@ -88,6 +95,7 @@ class _PluginBase(metaclass=ABCMeta):
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
         拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
+        插件配置页面使用Vuetify组件拼装，参考：https://vuetifyjs.com/
         """
         pass
 
@@ -95,13 +103,56 @@ class _PluginBase(metaclass=ABCMeta):
     def get_page(self) -> List[dict]:
         """
         拼装插件详情页面，需要返回页面配置，同时附带数据
+        插件详情页面使用Vuetify组件拼装，参考：https://vuetifyjs.com/
         """
         pass
 
-    @abstractmethod
-    def get_state(self) -> bool:
+    def get_service(self) -> List[Dict[str, Any]]:
         """
-        获取插件运行状态
+        注册插件公共服务
+        [{
+            "id": "服务ID",
+            "name": "服务名称",
+            "trigger": "触发器：cron/interval/date/CronTrigger.from_crontab()",
+            "func": self.xxx,
+            "kwargs": {} # 定时器参数
+        }]
+        """
+        pass
+
+    def get_dashboard(self, key: str, **kwargs) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], List[dict]]]:
+        """
+        获取插件仪表盘页面，需要返回：1、仪表板col配置字典；2、全局配置（自动刷新等）；3、仪表板页面元素配置json（含数据）
+        1、col配置参考：
+        {
+            "cols": 12, "md": 6
+        }
+        2、全局配置参考：
+        {
+            "refresh": 10, // 自动刷新时间，单位秒
+            "border": True, // 是否显示边框，默认True，为False时取消组件边框和边距，由插件自行控制
+            "title": "组件标题", // 组件标题，如有将显示该标题，否则显示插件名称
+            "subtitle": "组件子标题", // 组件子标题，缺省时不展示子标题
+        }
+        3、页面配置使用Vuetify组件拼装，参考：https://vuetifyjs.com/
+
+        kwargs参数可获取的值：1、user_agent：浏览器UA
+
+        :param key: 仪表盘key，根据指定的key返回相应的仪表盘数据，缺省时返回一个固定的仪表盘数据（兼容旧版）
+        """
+        pass
+
+    def get_dashboard_meta(self) -> Optional[List[Dict[str, str]]]:
+        """
+        获取插件仪表盘元信息
+        返回示例：
+            [{
+                "key": "dashboard1", // 仪表盘的key，在当前插件范围唯一
+                "name": "仪表盘1" // 仪表盘的名称
+            }, {
+                "key": "dashboard2",
+                "name": "仪表盘2"
+            }]
         """
         pass
 
@@ -142,27 +193,48 @@ class _PluginBase(metaclass=ABCMeta):
             data_path.mkdir(parents=True)
         return data_path
 
-    def save_data(self, key: str, value: Any) -> Base:
+    def save_data(self, key: str, value: Any, plugin_id: str = None):
         """
         保存插件数据
         :param key: 数据key
         :param value: 数据值
+        :param plugin_id: 插件ID
         """
-        return self.plugindata.save(self.__class__.__name__, key, value)
+        if not plugin_id:
+            plugin_id = self.__class__.__name__
+        self.plugindata.save(plugin_id, key, value)
 
-    def get_data(self, key: str) -> Any:
+    def get_data(self, key: str = None, plugin_id: str = None) -> Any:
         """
         获取插件数据
         :param key: 数据key
+        :param plugin_id: plugin_id
         """
-        return self.plugindata.get_data(self.__class__.__name__, key)
+        if not plugin_id:
+            plugin_id = self.__class__.__name__
+        return self.plugindata.get_data(plugin_id, key)
+
+    def del_data(self, key: str, plugin_id: str = None) -> Any:
+        """
+        删除插件数据
+        :param key: 数据key
+        :param plugin_id: plugin_id
+        """
+        if not plugin_id:
+            plugin_id = self.__class__.__name__
+        return self.plugindata.del_data(plugin_id, key)
 
     def post_message(self, channel: MessageChannel = None, mtype: NotificationType = None, title: str = None,
                      text: str = None, image: str = None, link: str = None, userid: str = None):
         """
         发送消息
         """
+        if not link:
+            link = settings.MP_DOMAIN(f"#/plugins?tab=installed&id={self.__class__.__name__}")
         self.chain.post_message(Notification(
             channel=channel, mtype=mtype, title=title, text=text,
             image=image, link=link, userid=userid
         ))
+
+    def close(self):
+        pass

@@ -1,13 +1,13 @@
 from typing import Any, List
 
 from fastapi import APIRouter, HTTPException, Depends
-from requests import Session
+from sqlalchemy.orm import Session
 
 from app import schemas
 from app.chain.media import MediaChain
 from app.chain.subscribe import SubscribeChain
-from app.core.config import settings
 from app.core.metainfo import MetaInfo
+from app.core.security import verify_apikey
 from app.db import get_db
 from app.db.models.subscribe import Subscribe
 from app.schemas import RadarrMovie, SonarrSeries
@@ -18,58 +18,109 @@ arr_router = APIRouter(tags=['servarr'])
 
 
 @arr_router.get("/system/status", summary="系统状态")
-def arr_system_status(apikey: str) -> Any:
+def arr_system_status(_: str = Depends(verify_apikey)) -> Any:
     """
     模拟Radarr、Sonarr系统状态
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     return {
         "appName": "MoviePilot",
         "instanceName": "moviepilot",
         "version": APP_VERSION,
-        "urlBase": ""
+        "buildTime": "",
+        "isDebug": False,
+        "isProduction": True,
+        "isAdmin": True,
+        "isUserInteractive": True,
+        "startupPath": "/app",
+        "appData": "/config",
+        "osName": "debian",
+        "osVersion": "",
+        "isNetCore": True,
+        "isLinux": True,
+        "isOsx": False,
+        "isWindows": False,
+        "isDocker": True,
+        "mode": "console",
+        "branch": "main",
+        "databaseType": "sqLite",
+        "databaseVersion": {
+            "major": 0,
+            "minor": 0,
+            "build": 0,
+            "revision": 0,
+            "majorRevision": 0,
+            "minorRevision": 0
+        },
+        "authentication": "none",
+        "migrationVersion": 0,
+        "urlBase": "",
+        "runtimeVersion": {
+            "major": 0,
+            "minor": 0,
+            "build": 0,
+            "revision": 0,
+            "majorRevision": 0,
+            "minorRevision": 0
+        },
+        "runtimeName": "",
+        "startTime": "",
+        "packageVersion": "",
+        "packageAuthor": "jxxghp",
+        "packageUpdateMechanism": "builtIn",
+        "packageUpdateMechanismMessage": ""
     }
 
 
 @arr_router.get("/qualityProfile", summary="质量配置")
-def arr_qualityProfile(apikey: str) -> Any:
+def arr_qualityProfile(_: str = Depends(verify_apikey)) -> Any:
     """
     模拟Radarr、Sonarr质量配置
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     return [
         {
             "id": 1,
-            "name": "默认"
+            "name": "默认",
+            "upgradeAllowed": True,
+            "cutoff": 0,
+            "items": [
+                {
+                    "id": 0,
+                    "name": "默认",
+                    "quality": {
+                        "id": 0,
+                        "name": "默认",
+                        "source": "0",
+                        "resolution": 0
+                    },
+                    "items": [
+                        "string"
+                    ],
+                    "allowed": True
+                }
+            ],
+            "minFormatScore": 0,
+            "cutoffFormatScore": 0,
+            "formatItems": [
+                {
+                    "id": 0,
+                    "format": 0,
+                    "name": "默认",
+                    "score": 0
+                }
+            ]
         }
     ]
 
 
 @arr_router.get("/rootfolder", summary="根目录")
-def arr_rootfolder(apikey: str) -> Any:
+def arr_rootfolder(_: str = Depends(verify_apikey)) -> Any:
     """
     模拟Radarr、Sonarr根目录
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
-    library_path = "/"
-    if settings.LIBRARY_PATH:
-        library_path = settings.LIBRARY_PATH.split(",")[0]
     return [
         {
             "id": 1,
-            "path": library_path,
+            "path": "/",
             "accessible": True,
             "freeSpace": 0,
             "unmappedFolders": []
@@ -78,15 +129,10 @@ def arr_rootfolder(apikey: str) -> Any:
 
 
 @arr_router.get("/tag", summary="标签")
-def arr_tag(apikey: str) -> Any:
+def arr_tag(_: str = Depends(verify_apikey)) -> Any:
     """
     模拟Radarr、Sonarr标签
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     return [
         {
             "id": 1,
@@ -96,15 +142,10 @@ def arr_tag(apikey: str) -> Any:
 
 
 @arr_router.get("/languageprofile", summary="语言")
-def arr_languageprofile(apikey: str) -> Any:
+def arr_languageprofile(_: str = Depends(verify_apikey)) -> Any:
     """
     模拟Radarr、Sonarr语言
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     return [{
         "id": 1,
         "name": "默认",
@@ -127,7 +168,7 @@ def arr_languageprofile(apikey: str) -> Any:
 
 
 @arr_router.get("/movie", summary="所有订阅电影", response_model=List[schemas.RadarrMovie])
-def arr_movies(apikey: str, db: Session = Depends(get_db)) -> Any:
+def arr_movies(_: str = Depends(verify_apikey), db: Session = Depends(get_db)) -> Any:
     """
     查询Rardar电影
     """
@@ -196,11 +237,6 @@ def arr_movies(apikey: str, db: Session = Depends(get_db)) -> Any:
       }
     ]
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     # 查询所有电影订阅
     result = []
     subscribes = Subscribe.list(db)
@@ -223,16 +259,11 @@ def arr_movies(apikey: str, db: Session = Depends(get_db)) -> Any:
 
 
 @arr_router.get("/movie/lookup", summary="查询电影", response_model=List[schemas.RadarrMovie])
-def arr_movie_lookup(apikey: str, term: str, db: Session = Depends(get_db)) -> Any:
+def arr_movie_lookup(term: str, db: Session = Depends(get_db), _: str = Depends(verify_apikey)) -> Any:
     """
     查询Rardar电影 term: `tmdb:${id}`
     存在和不存在均不能返回错误
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     tmdbid = term.replace("tmdb:", "")
     # 查询媒体信息
     mediainfo = MediaChain().recognize_media(mtype=MediaType.MOVIE, tmdbid=int(tmdbid))
@@ -274,15 +305,10 @@ def arr_movie_lookup(apikey: str, term: str, db: Session = Depends(get_db)) -> A
 
 
 @arr_router.get("/movie/{mid}", summary="电影订阅详情", response_model=schemas.RadarrMovie)
-def arr_movie(apikey: str, mid: int, db: Session = Depends(get_db)) -> Any:
+def arr_movie(mid: int, db: Session = Depends(get_db), _: str = Depends(verify_apikey)) -> Any:
     """
     查询Rardar电影订阅
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     subscribe = Subscribe.get(db, mid)
     if subscribe:
         return RadarrMovie(
@@ -305,20 +331,25 @@ def arr_movie(apikey: str, mid: int, db: Session = Depends(get_db)) -> Any:
 
 
 @arr_router.post("/movie", summary="新增电影订阅")
-def arr_add_movie(apikey: str, movie: RadarrMovie) -> Any:
+def arr_add_movie(movie: RadarrMovie,
+                  db: Session = Depends(get_db),
+                  _: str = Depends(verify_apikey)
+                  ) -> Any:
     """
     新增Rardar电影订阅
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
+    # 检查订阅是否已存在
+    subscribe = Subscribe.get_by_tmdbid(db, movie.tmdbId)
+    if subscribe:
+        return {
+            "id": subscribe.id
+        }
+    # 添加订阅
     sid, message = SubscribeChain().add(title=movie.title,
                                         year=movie.year,
                                         mtype=MediaType.MOVIE,
                                         tmdbid=movie.tmdbId,
-                                        userid="Seerr")
+                                        username="Seerr")
     if sid:
         return {
             "id": sid
@@ -331,15 +362,10 @@ def arr_add_movie(apikey: str, movie: RadarrMovie) -> Any:
 
 
 @arr_router.delete("/movie/{mid}", summary="删除电影订阅", response_model=schemas.Response)
-def arr_remove_movie(apikey: str, mid: int, db: Session = Depends(get_db)) -> Any:
+def arr_remove_movie(mid: int, db: Session = Depends(get_db), _: str = Depends(verify_apikey)) -> Any:
     """
     删除Rardar电影订阅
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     subscribe = Subscribe.get(db, mid)
     if subscribe:
         subscribe.delete(db, mid)
@@ -352,7 +378,7 @@ def arr_remove_movie(apikey: str, mid: int, db: Session = Depends(get_db)) -> An
 
 
 @arr_router.get("/series", summary="所有剧集", response_model=List[schemas.SonarrSeries])
-def arr_series(apikey: str, db: Session = Depends(get_db)) -> Any:
+def arr_series(_: str = Depends(verify_apikey), db: Session = Depends(get_db)) -> Any:
     """
     查询Sonarr剧集
     """
@@ -458,11 +484,6 @@ def arr_series(apikey: str, db: Session = Depends(get_db)) -> Any:
       }
     ]
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     # 查询所有电视剧订阅
     result = []
     subscribes = Subscribe.list(db)
@@ -477,7 +498,7 @@ def arr_series(apikey: str, db: Session = Depends(get_db)) -> Any:
                 "seasonNumber": subscribe.season,
                 "monitored": True,
             }],
-            remotePoster=subscribe.image,
+            remotePoster=subscribe.poster,
             year=subscribe.year,
             tmdbId=subscribe.tmdbid,
             tvdbId=subscribe.tvdbid,
@@ -493,47 +514,49 @@ def arr_series(apikey: str, db: Session = Depends(get_db)) -> Any:
 
 
 @arr_router.get("/series/lookup", summary="查询剧集")
-def arr_series_lookup(apikey: str, term: str, db: Session = Depends(get_db)) -> Any:
+def arr_series_lookup(term: str, db: Session = Depends(get_db), _: str = Depends(verify_apikey)) -> Any:
     """
     查询Sonarr剧集 term: `tvdb:${id}` title
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
-    # 查询TMDB媒体信息
+    # 获取TVDBID
     if not term.startswith("tvdb:"):
         mediainfo = MediaChain().recognize_media(meta=MetaInfo(term),
-                                                 mtype=MediaType.MOVIE)
+                                                 mtype=MediaType.TV)
         if not mediainfo:
             return [SonarrSeries()]
         tvdbid = mediainfo.tvdb_id
-        tmdbid = mediainfo.tmdb_id
-    else:
-        tvdbid = int(term.replace("tvdb:", ""))
-        mediainfo = MediaChain().recognize_media(mtype=MediaType.MOVIE,
-                                                 tmdbid=tvdbid)
-        if not mediainfo:
+        if not tvdbid:
             return [SonarrSeries()]
-        tmdbid = mediainfo.tmdb_id
-    # 查询TVDB季信息
+    else:
+        mediainfo = None
+        tvdbid = int(term.replace("tvdb:", ""))
+
+    # 查询TVDB信息
+    tvdbinfo = MediaChain().tvdb_info(tvdbid=tvdbid)
+    if not tvdbinfo:
+        return [SonarrSeries()]
+
+    # 季信息
     seas: List[int] = []
-    if tvdbid:
-        tvdbinfo = MediaChain().tvdb_info(tvdbid=tvdbid)
-        if tvdbinfo:
-            sea_num = tvdbinfo.get('season')
-            if sea_num:
-                seas = list(range(1, int(sea_num) + 1))
+    sea_num = tvdbinfo.get('season')
+    if sea_num:
+        seas = list(range(1, int(sea_num) + 1))
+
+    # 根据TVDB查询媒体信息
+    if not mediainfo:
+        mediainfo = MediaChain().recognize_media(meta=MetaInfo(tvdbinfo.get('seriesName')),
+                                                 mtype=MediaType.TV)
+
     # 查询是否存在
     exists = MediaChain().media_exists(mediainfo)
     if exists:
         hasfile = True
     else:
         hasfile = False
+
     # 查询订阅信息
     seasons: List[dict] = []
-    subscribes = Subscribe.get_by_tmdbid(db, tmdbid)
+    subscribes = Subscribe.get_by_tmdbid(db, mediainfo.tmdb_id)
     if subscribes:
         # 已监控
         monitored = True
@@ -580,15 +603,10 @@ def arr_series_lookup(apikey: str, term: str, db: Session = Depends(get_db)) -> 
 
 
 @arr_router.get("/series/{tid}", summary="剧集详情")
-def arr_serie(apikey: str, tid: int, db: Session = Depends(get_db)) -> Any:
+def arr_serie(tid: int, db: Session = Depends(get_db), _: str = Depends(verify_apikey)) -> Any:
     """
     查询Sonarr剧集
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     subscribe = Subscribe.get(db, tid)
     if subscribe:
         return SonarrSeries(
@@ -600,7 +618,7 @@ def arr_serie(apikey: str, tid: int, db: Session = Depends(get_db)) -> Any:
                 "monitored": True,
             }],
             year=subscribe.year,
-            remotePoster=subscribe.image,
+            remotePoster=subscribe.poster,
             tmdbId=subscribe.tmdbid,
             tvdbId=subscribe.tvdbid,
             imdbId=subscribe.imdbid,
@@ -619,18 +637,29 @@ def arr_serie(apikey: str, tid: int, db: Session = Depends(get_db)) -> Any:
 
 
 @arr_router.post("/series", summary="新增剧集订阅")
-def arr_add_series(apikey: str, tv: schemas.SonarrSeries) -> Any:
+def arr_add_series(tv: schemas.SonarrSeries,
+                   db: Session = Depends(get_db),
+                   _: str = Depends(verify_apikey)) -> Any:
     """
     新增Sonarr剧集订阅
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
+    # 检查订阅是否存在
+    left_seasons = []
+    for season in tv.seasons:
+        subscribe = Subscribe.get_by_tmdbid(db, tmdbid=tv.tmdbId,
+                                            season=season.get("seasonNumber"))
+        if subscribe:
+            continue
+        left_seasons.append(season)
+    # 全部已存在订阅
+    if not left_seasons:
+        return {
+            "id": 1
+        }
+    # 剩下的添加订阅
     sid = 0
     message = ""
-    for season in tv.seasons:
+    for season in left_seasons:
         if not season.get("monitored"):
             continue
         sid, message = SubscribeChain().add(title=tv.title,
@@ -638,7 +667,7 @@ def arr_add_series(apikey: str, tv: schemas.SonarrSeries) -> Any:
                                             season=season.get("seasonNumber"),
                                             tmdbid=tv.tmdbId,
                                             mtype=MediaType.TV,
-                                            userid="Seerr")
+                                            username="Seerr")
 
     if sid:
         return {
@@ -652,15 +681,10 @@ def arr_add_series(apikey: str, tv: schemas.SonarrSeries) -> Any:
 
 
 @arr_router.delete("/series/{tid}", summary="删除剧集订阅")
-def arr_remove_series(apikey: str, tid: int, db: Session = Depends(get_db)) -> Any:
+def arr_remove_series(tid: int, db: Session = Depends(get_db), _: str = Depends(verify_apikey)) -> Any:
     """
     删除Sonarr剧集订阅
     """
-    if not apikey or apikey != settings.API_TOKEN:
-        raise HTTPException(
-            status_code=403,
-            detail="认证失败！",
-        )
     subscribe = Subscribe.get(db, tid)
     if subscribe:
         subscribe.delete(db, tid)

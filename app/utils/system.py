@@ -3,9 +3,14 @@ import os
 import platform
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Union, Tuple
+
+import docker
 import psutil
+
 from app import schemas
 
 
@@ -25,21 +30,61 @@ class SystemUtils:
 
     @staticmethod
     def is_docker() -> bool:
+        """
+        判断是否为Docker环境
+        """
         return Path("/.dockerenv").exists()
 
     @staticmethod
     def is_synology() -> bool:
+        """
+        判断是否为群晖系统
+        """
         if SystemUtils.is_windows():
             return False
         return True if "synology" in SystemUtils.execute('uname -a') else False
 
     @staticmethod
     def is_windows() -> bool:
+        """
+        判断是否为Windows系统
+        """
         return True if os.name == "nt" else False
 
     @staticmethod
+    def is_frozen() -> bool:
+        """
+        判断是否为冻结的二进制文件
+        """
+        return True if getattr(sys, 'frozen', False) else False
+
+    @staticmethod
     def is_macos() -> bool:
+        """
+        判断是否为MacOS系统
+        """
         return True if platform.system() == 'Darwin' else False
+
+    @staticmethod
+    def is_aarch64() -> bool:
+        """
+        判断是否为ARM64架构
+        """
+        return True if platform.machine() == 'aarch64' else False
+
+    @staticmethod
+    def platform() -> str:
+        """
+        获取系统平台
+        """
+        if SystemUtils.is_windows():
+            return "Windows"
+        elif SystemUtils.is_macos():
+            return "MacOS"
+        elif SystemUtils.is_aarch64():
+            return "Arm64"
+        else:
+            return "Linux"
 
     @staticmethod
     def copy(src: Path, dest: Path) -> Tuple[int, str]:
@@ -59,7 +104,10 @@ class SystemUtils:
         移动
         """
         try:
-            shutil.move(src.replace(dest.name), dest)
+            # 当前目录改名
+            temp = src.replace(src.parent / dest.name)
+            # 移动到目标目录
+            shutil.move(temp, dest)
             return 0, ""
         except Exception as err:
             print(str(err))
@@ -71,7 +119,14 @@ class SystemUtils:
         硬链接
         """
         try:
-            dest.hardlink_to(src)
+            # 准备目标路径，增加后缀 .mp
+            tmp_path = dest.with_suffix(dest.suffix + ".mp")
+            # 检查目标路径是否已存在，如果存在则先unlink
+            if tmp_path.exists():
+                tmp_path.unlink()
+            tmp_path.hardlink_to(src)
+            # 硬链接完成，移除 .mp 后缀
+            shutil.move(tmp_path, dest)
             return 0, ""
         except Exception as err:
             print(str(err))
@@ -90,22 +145,172 @@ class SystemUtils:
             return -1, str(err)
 
     @staticmethod
-    def list_files_with_extensions(directory: Path, extensions: list) -> List[Path]:
+    def rclone_move(src: Path, dest: Path):
         """
-        获取目录下所有指定扩展名的文件
+        Rclone移动
         """
+        try:
+            retcode = subprocess.run(
+                [
+                    'rclone', 'moveto',
+                    str(src),
+                    f'MP:{dest}'
+                ],
+                startupinfo=SystemUtils.__get_hidden_shell()
+            ).returncode
+            return retcode, ""
+        except Exception as err:
+            print(str(err))
+            return -1, str(err)
+
+    @staticmethod
+    def rclone_copy(src: Path, dest: Path):
+        """
+        Rclone复制
+        """
+        try:
+            retcode = subprocess.run(
+                [
+                    'rclone', 'copyto',
+                    str(src),
+                    f'MP:{dest}'
+                ],
+                startupinfo=SystemUtils.__get_hidden_shell()
+            ).returncode
+            return retcode, ""
+        except Exception as err:
+            print(str(err))
+            return -1, str(err)
+
+    @staticmethod
+    def __get_hidden_shell():
+        if SystemUtils.is_windows():
+            st = subprocess.STARTUPINFO()
+            st.dwFlags = subprocess.STARTF_USESHOWWINDOW
+            st.wShowWindow = subprocess.SW_HIDE
+            return st
+        else:
+            return None
+
+    @staticmethod
+    def list_files(directory: Path, extensions: list, min_filesize: int = 0) -> List[Path]:
+        """
+        获取目录下所有指定扩展名的文件（包括子目录）
+        """
+
+        if not min_filesize:
+            min_filesize = 0
+
+        if not directory.exists():
+            return []
+
         if directory.is_file():
             return [directory]
+
+        if not min_filesize:
+            min_filesize = 0
 
         files = []
         pattern = r".*(" + "|".join(extensions) + ")$"
 
         # 遍历目录及子目录
         for path in directory.rglob('**/*'):
+            if path.is_file() \
+                    and re.match(pattern, path.name, re.IGNORECASE) \
+                    and path.stat().st_size >= min_filesize * 1024 * 1024:
+                files.append(path)
+
+        return files
+
+    @staticmethod
+    def exits_files(directory: Path, extensions: list, min_filesize: int = 0) -> bool:
+        """
+        判断目录下是否存在指定扩展名的文件
+        :return True存在 False不存在
+        """
+
+        if not min_filesize:
+            min_filesize = 0
+
+        if not directory.exists():
+            return False
+
+        if directory.is_file():
+            return True
+
+        if not min_filesize:
+            min_filesize = 0
+
+        pattern = r".*(" + "|".join(extensions) + ")$"
+
+        # 遍历目录及子目录
+        for path in directory.rglob('**/*'):
+            if path.is_file() \
+                    and re.match(pattern, path.name, re.IGNORECASE) \
+                    and path.stat().st_size >= min_filesize * 1024 * 1024:
+                return True
+
+        return False
+
+    @staticmethod
+    def list_sub_files(directory: Path, extensions: list) -> List[Path]:
+        """
+        列出当前目录下的所有指定扩展名的文件(不包括子目录)
+        """
+        if not directory.exists():
+            return []
+
+        if directory.is_file():
+            return [directory]
+
+        files = []
+        pattern = r".*(" + "|".join(extensions) + ")$"
+
+        # 遍历目录
+        for path in directory.iterdir():
             if path.is_file() and re.match(pattern, path.name, re.IGNORECASE):
                 files.append(path)
 
         return files
+
+    @staticmethod
+    def list_sub_directory(directory: Path) -> List[Path]:
+        """
+        列出当前目录下的所有子目录（不递归）
+        """
+        if not directory.exists():
+            return []
+
+        if directory.is_file():
+            return []
+
+        dirs = []
+
+        # 遍历目录
+        for path in directory.iterdir():
+            if path.is_dir():
+                dirs.append(path)
+
+        return dirs
+
+    @staticmethod
+    def list_sub_all(directory: Path) -> List[Path]:
+        """
+        列出当前目录下的所有子目录和文件（不递归）
+        """
+        if not directory.exists():
+            return []
+
+        if directory.is_file():
+            return []
+
+        items = []
+
+        # 遍历目录
+        for path in directory.iterdir():
+            items.append(path)
+
+        return items
 
     @staticmethod
     def get_directory_size(path: Path) -> float:
@@ -199,3 +404,122 @@ class SystemUtils:
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
         return processes
+
+    @staticmethod
+    def is_bluray_dir(dir_path: Path) -> bool:
+        """
+        判断是否为蓝光原盘目录
+        """
+        if not dir_path.is_dir():
+            return False
+        # 蓝光原盘目录必备的文件或文件夹
+        required_files = ['BDMV', 'CERTIFICATE']
+        # 检查目录下是否存在所需文件或文件夹
+        for item in required_files:
+            if (dir_path / item).exists():
+                return True
+        return False
+
+    @staticmethod
+    def get_windows_drives():
+        """
+        获取Windows所有盘符
+        """
+        vols = []
+        for i in range(65, 91):
+            vol = chr(i) + ':'
+            if os.path.isdir(vol):
+                vols.append(vol)
+        return vols
+
+    @staticmethod
+    def cpu_usage():
+        """
+        获取CPU使用率
+        """
+        return psutil.cpu_percent()
+
+    @staticmethod
+    def memory_usage() -> List[int]:
+        """
+        获取内存使用量和使用率
+        """
+        return [psutil.virtual_memory().used, int(psutil.virtual_memory().percent)]
+
+    @staticmethod
+    def can_restart() -> bool:
+        """
+        判断是否可以内部重启
+        """
+        return Path("/var/run/docker.sock").exists()
+
+    @staticmethod
+    def restart() -> Tuple[bool, str]:
+        """
+        执行Docker重启操作
+        """
+        if not SystemUtils.is_docker():
+            return False, "非Docker环境，无法重启！"
+        try:
+            # 创建 Docker 客户端
+            client = docker.DockerClient(base_url='tcp://127.0.0.1:38379')
+            # 获取当前容器的 ID
+            container_id = None
+            with open('/proc/self/mountinfo', 'r') as f:
+                data = f.read()
+                index_resolv_conf = data.find("resolv.conf")
+                if index_resolv_conf != -1:
+                    index_second_slash = data.rfind("/", 0, index_resolv_conf)
+                    index_first_slash = data.rfind("/", 0, index_second_slash) + 1
+                    container_id = data[index_first_slash:index_second_slash]
+                    if len(container_id) < 20:
+                        index_resolv_conf = data.find("/sys/fs/cgroup/devices")
+                        if index_resolv_conf != -1:
+                            index_second_slash = data.rfind(" ", 0, index_resolv_conf)
+                            index_first_slash = data.rfind("/", 0, index_second_slash) + 1
+                            container_id = data[index_first_slash:index_second_slash]
+            if not container_id:
+                return False, "获取容器ID失败！"
+            # 重启当前容器
+            client.containers.get(container_id.strip()).restart()
+            return True, ""
+        except Exception as err:
+            print(str(err))
+            return False, f"重启时发生错误：{str(err)}"
+
+    @staticmethod
+    def is_hardlink(src: Path, dest: Path) -> bool:
+        """
+        判断是否为硬链接（可能无法支持宿主机挂载smb盘符映射docker的场景）
+        """
+        try:
+            if not src.exists() or not dest.exists():
+                return False
+            if src.is_file():
+                # 如果是文件，直接比较文件
+                return src.samefile(dest)
+            else:
+                for src_file in src.glob("**/*"):
+                    if src_file.is_dir():
+                        continue
+                    # 计算目标文件路径
+                    relative_path = src_file.relative_to(src)
+                    target_file = dest.joinpath(relative_path)
+                    # 检查是否是硬链接
+                    if not target_file.exists() or not src_file.samefile(target_file):
+                        return False
+                return True
+        except Exception as e:
+            print(f"Error occurred: {e}")
+            return False
+
+    @staticmethod
+    def is_same_disk(src: Path, dest: Path) -> bool:
+        """
+        判断两个路径是否在同一磁盘
+        """
+        if not src.exists() or not dest.exists():
+            return False
+        if os.name == "nt":
+            return src.drive == dest.drive
+        return os.stat(src).st_dev == os.stat(dest).st_dev

@@ -1,39 +1,181 @@
-from typing import Optional, List, Tuple
+import copy
+import time
+from pathlib import Path
+from threading import Lock
+from typing import Optional, List, Tuple, Union
 
+from app import schemas
 from app.chain import ChainBase
+from app.core.config import settings
 from app.core.context import Context, MediaInfo
+from app.core.event import eventmanager, Event
 from app.core.meta import MetaBase
-from app.core.metainfo import MetaInfo
+from app.core.metainfo import MetaInfo, MetaInfoPath
+from app.helper.aliyun import AliyunHelper
+from app.helper.u115 import U115Helper
 from app.log import logger
+from app.schemas.types import EventType, MediaType
+from app.utils.http import RequestUtils
+from app.utils.singleton import Singleton
 from app.utils.string import StringUtils
+from app.utils.system import SystemUtils
+
+recognize_lock = Lock()
 
 
-class MediaChain(ChainBase):
+class MediaChain(ChainBase, metaclass=Singleton):
     """
-    媒体信息处理链
+    媒体信息处理链，单例运行
     """
+    # 临时识别标题
+    recognize_title: Optional[str] = None
+    # 临时识别结果 {title, name, year, season, episode}
+    recognize_temp: Optional[dict] = None
 
-    def recognize_by_title(self, title: str, subtitle: str = None) -> Optional[Context]:
+    def metadata_nfo(self, meta: MetaBase, mediainfo: MediaInfo,
+                     season: int = None, episode: int = None) -> Optional[str]:
+        """
+        获取NFO文件内容文本
+        :param meta: 元数据
+        :param mediainfo: 媒体信息
+        :param season: 季号
+        :param episode: 集号
+        """
+        return self.run_module("metadata_nfo", meta=meta, mediainfo=mediainfo, season=season, episode=episode)
+
+    def recognize_by_meta(self, metainfo: MetaBase) -> Optional[MediaInfo]:
         """
         根据主副标题识别媒体信息
         """
-        logger.info(f'开始识别媒体信息，标题：{title}，副标题：{subtitle} ...')
-        # 识别元数据
-        metainfo = MetaInfo(title, subtitle)
+        title = metainfo.title
         # 识别媒体信息
         mediainfo: MediaInfo = self.recognize_media(meta=metainfo)
         if not mediainfo:
-            logger.warn(f'{title} 未识别到媒体信息')
-            return Context(meta_info=metainfo)
+            # 尝试使用辅助识别，如果有注册响应事件的话
+            if eventmanager.check(EventType.NameRecognize):
+                logger.info(f'请求辅助识别，标题：{title} ...')
+                mediainfo = self.recognize_help(title=title, org_meta=metainfo)
+            if not mediainfo:
+                logger.warn(f'{title} 未识别到媒体信息')
+                return None
+        # 识别成功
         logger.info(f'{title} 识别到媒体信息：{mediainfo.type.value} {mediainfo.title_year}')
         # 更新媒体图片
         self.obtain_images(mediainfo=mediainfo)
         # 返回上下文
-        return Context(meta_info=metainfo, media_info=mediainfo)
+        return mediainfo
 
-    def search(self, title: str) -> Tuple[MetaBase, List[MediaInfo]]:
+    def recognize_help(self, title: str, org_meta: MetaBase) -> Optional[MediaInfo]:
         """
-        搜索媒体信息
+        请求辅助识别，返回媒体信息
+        :param title: 标题
+        :param org_meta: 原始元数据
+        """
+        with recognize_lock:
+            self.recognize_temp = None
+            self.recognize_title = title
+
+        # 发送请求事件
+        eventmanager.send_event(
+            EventType.NameRecognize,
+            {
+                'title': title,
+            }
+        )
+        # 每0.5秒循环一次，等待结果，直到10秒后超时
+        for i in range(20):
+            if self.recognize_temp is not None:
+                break
+            time.sleep(0.5)
+        # 加锁
+        with recognize_lock:
+            mediainfo = None
+            if not self.recognize_temp or self.recognize_title != title:
+                # 没有识别结果或者识别标题已改变
+                return None
+            # 有识别结果
+            meta_dict = copy.deepcopy(self.recognize_temp)
+        logger.info(f'获取到辅助识别结果：{meta_dict}')
+        if meta_dict.get("name") == org_meta.name and meta_dict.get("year") == org_meta.year:
+            logger.info(f'辅助识别结果与原始识别结果一致')
+        else:
+            logger.info(f'辅助识别结果与原始识别结果不一致，重新匹配媒体信息 ...')
+            org_meta.name = meta_dict.get("name")
+            org_meta.year = meta_dict.get("year")
+            org_meta.begin_season = meta_dict.get("season")
+            org_meta.begin_episode = meta_dict.get("episode")
+            if org_meta.begin_season or org_meta.begin_episode:
+                org_meta.type = MediaType.TV
+            # 重新识别
+            mediainfo = self.recognize_media(meta=org_meta)
+        return mediainfo
+
+    @eventmanager.register(EventType.NameRecognizeResult)
+    def recognize_result(self, event: Event):
+        """
+        监控识别结果事件，获取辅助识别结果，结果格式：{title, name, year, season, episode}
+        """
+        if not event:
+            return
+        event_data = event.event_data or {}
+        # 加锁
+        with recognize_lock:
+            # 不是原标题的结果不要
+            if event_data.get("title") != self.recognize_title:
+                return
+            # 标志收到返回
+            self.recognize_temp = {}
+            # 处理数据格式
+            file_title, file_year, season_number, episode_number = None, None, None, None
+            if event_data.get("name"):
+                file_title = str(event_data["name"]).split("/")[0].strip().replace(".", " ")
+            if event_data.get("year"):
+                file_year = str(event_data["year"]).split("/")[0].strip()
+            if event_data.get("season") and str(event_data["season"]).isdigit():
+                season_number = int(event_data["season"])
+            if event_data.get("episode") and str(event_data["episode"]).isdigit():
+                episode_number = int(event_data["episode"])
+            if not file_title:
+                return
+            if file_title == 'Unknown':
+                return
+            if not str(file_year).isdigit():
+                file_year = None
+            # 结果赋值
+            self.recognize_temp = {
+                "name": file_title,
+                "year": file_year,
+                "season": season_number,
+                "episode": episode_number
+            }
+
+    def recognize_by_path(self, path: str) -> Optional[Context]:
+        """
+        根据文件路径识别媒体信息
+        """
+        logger.info(f'开始识别媒体信息，文件：{path} ...')
+        file_path = Path(path)
+        # 元数据
+        file_meta = MetaInfoPath(file_path)
+        # 识别媒体信息
+        mediainfo = self.recognize_media(meta=file_meta)
+        if not mediainfo:
+            # 尝试使用辅助识别，如果有注册响应事件的话
+            if eventmanager.check(EventType.NameRecognize):
+                logger.info(f'请求辅助识别，标题：{file_path.name} ...')
+                mediainfo = self.recognize_help(title=path, org_meta=file_meta)
+            if not mediainfo:
+                logger.warn(f'{path} 未识别到媒体信息')
+                return Context(meta_info=file_meta)
+        logger.info(f'{path} 识别到媒体信息：{mediainfo.type.value} {mediainfo.title_year}')
+        # 更新媒体图片
+        self.obtain_images(mediainfo=mediainfo)
+        # 返回上下文
+        return Context(meta_info=file_meta, media_info=mediainfo)
+
+    def search(self, title: str) -> Tuple[Optional[MetaBase], List[MediaInfo]]:
+        """
+        搜索媒体/人物信息
         :param title: 搜索内容
         :return: 识别元数据，媒体信息列表
         """
@@ -42,8 +184,7 @@ class MediaChain(ChainBase):
         # 识别
         meta = MetaInfo(content)
         if not meta.name:
-            logger.warn(f'{title} 未识别到元数据！')
-            return meta, []
+            meta.cn_name = content
         # 合并信息
         if mtype:
             meta.type = mtype
@@ -62,3 +203,318 @@ class MediaChain(ChainBase):
         logger.info(f"{content} 搜索到 {len(medias)} 条相关媒体信息")
         # 识别的元数据，媒体信息列表
         return meta, medias
+
+    def get_tmdbinfo_by_doubanid(self, doubanid: str, mtype: MediaType = None) -> Optional[dict]:
+        """
+        根据豆瓣ID获取TMDB信息
+        """
+        tmdbinfo = None
+        doubaninfo = self.douban_info(doubanid=doubanid, mtype=mtype)
+        if doubaninfo:
+            # 优先使用原标题匹配
+            if doubaninfo.get("original_title"):
+                meta = MetaInfo(title=doubaninfo.get("title"))
+                meta_org = MetaInfo(title=doubaninfo.get("original_title"))
+            else:
+                meta_org = meta = MetaInfo(title=doubaninfo.get("title"))
+            # 年份
+            if doubaninfo.get("year"):
+                meta.year = doubaninfo.get("year")
+            # 处理类型
+            if isinstance(doubaninfo.get('media_type'), MediaType):
+                meta.type = doubaninfo.get('media_type')
+            else:
+                meta.type = MediaType.MOVIE if doubaninfo.get("type") == "movie" else MediaType.TV
+            # 匹配TMDB信息
+            meta_names = list(dict.fromkeys([k for k in [meta_org.name,
+                                                         meta.cn_name,
+                                                         meta.en_name] if k]))
+            for name in meta_names:
+                tmdbinfo = self.match_tmdbinfo(
+                    name=name,
+                    year=meta.year,
+                    mtype=mtype or meta.type,
+                    season=meta.begin_season
+                )
+                if tmdbinfo:
+                    # 合季季后返回
+                    tmdbinfo['season'] = meta.begin_season
+                    break
+        return tmdbinfo
+
+    def get_tmdbinfo_by_bangumiid(self, bangumiid: int) -> Optional[dict]:
+        """
+        根据BangumiID获取TMDB信息
+        """
+        bangumiinfo = self.bangumi_info(bangumiid=bangumiid)
+        if bangumiinfo:
+            # 优先使用原标题匹配
+            if bangumiinfo.get("name_cn"):
+                meta = MetaInfo(title=bangumiinfo.get("name"))
+                meta_cn = MetaInfo(title=bangumiinfo.get("name_cn"))
+            else:
+                meta_cn = meta = MetaInfo(title=bangumiinfo.get("name"))
+            # 年份
+            release_date = bangumiinfo.get("date") or bangumiinfo.get("air_date")
+            if release_date:
+                year = release_date[:4]
+            else:
+                year = None
+            # 识别TMDB媒体信息
+            meta_names = list(dict.fromkeys([k for k in [meta_cn.name,
+                                                         meta.name] if k]))
+            for name in meta_names:
+                tmdbinfo = self.match_tmdbinfo(
+                    name=name,
+                    year=year,
+                    mtype=MediaType.TV,
+                    season=meta.begin_season
+                )
+                if tmdbinfo:
+                    return tmdbinfo
+        return None
+
+    def get_doubaninfo_by_tmdbid(self, tmdbid: int,
+                                 mtype: MediaType = None, season: int = None) -> Optional[dict]:
+        """
+        根据TMDBID获取豆瓣信息
+        """
+        tmdbinfo = self.tmdb_info(tmdbid=tmdbid, mtype=mtype)
+        if tmdbinfo:
+            # 名称
+            name = tmdbinfo.get("title") or tmdbinfo.get("name")
+            # 年份
+            year = None
+            if tmdbinfo.get('release_date'):
+                year = tmdbinfo['release_date'][:4]
+            elif tmdbinfo.get('seasons') and season:
+                for seainfo in tmdbinfo['seasons']:
+                    # 季
+                    season_number = seainfo.get("season_number")
+                    if not season_number:
+                        continue
+                    air_date = seainfo.get("air_date")
+                    if air_date and season_number == season:
+                        year = air_date[:4]
+                        break
+            # IMDBID
+            imdbid = tmdbinfo.get("external_ids", {}).get("imdb_id")
+            return self.match_doubaninfo(
+                name=name,
+                year=year,
+                mtype=mtype,
+                imdbid=imdbid
+            )
+        return None
+
+    def get_doubaninfo_by_bangumiid(self, bangumiid: int) -> Optional[dict]:
+        """
+        根据BangumiID获取豆瓣信息
+        """
+        bangumiinfo = self.bangumi_info(bangumiid=bangumiid)
+        if bangumiinfo:
+            # 优先使用中文标题匹配
+            if bangumiinfo.get("name_cn"):
+                meta = MetaInfo(title=bangumiinfo.get("name_cn"))
+            else:
+                meta = MetaInfo(title=bangumiinfo.get("name"))
+            # 年份
+            release_date = bangumiinfo.get("date") or bangumiinfo.get("air_date")
+            if release_date:
+                year = release_date[:4]
+            else:
+                year = None
+            # 使用名称识别豆瓣媒体信息
+            return self.match_doubaninfo(
+                name=meta.name,
+                year=year,
+                mtype=MediaType.TV,
+                season=meta.begin_season
+            )
+        return None
+
+    def manual_scrape(self, storage: str, fileitem: schemas.FileItem,
+                      meta: MetaBase = None, mediainfo: MediaInfo = None, init_folder: bool = True):
+        """
+        手动刮削媒体信息
+        """
+
+        def __list_files(_storage: str, _fileid: str, _path: str = None, _drive_id: str = None):
+            """
+            列出下级文件
+            """
+            if _storage == "aliyun":
+                return AliyunHelper().list(drive_id=_drive_id, parent_file_id=_fileid, path=_path)
+            elif _storage == "u115":
+                return U115Helper().list(parent_file_id=_fileid, path=_path)
+            else:
+                items = SystemUtils.list_sub_all(Path(_path))
+                return [schemas.FileItem(
+                    type="file" if item.is_file() else "dir",
+                    path=str(item),
+                    name=item.name,
+                    basename=item.stem,
+                    extension=item.suffix[1:],
+                    size=item.stat().st_size,
+                    modify_time=item.stat().st_mtime
+                ) for item in items]
+
+        def __save_file(_storage: str, _drive_id: str, _fileid: str, _path: Path, _content: Union[bytes, str]):
+            """
+            保存或上传文件
+            """
+            if _storage != "local":
+                # 写入到临时目录
+                temp_path = settings.TEMP_PATH / _path.name
+                temp_path.write_bytes(_content)
+                # 上传文件
+                logger.info(f"正在上传 {_path.name} ...")
+                if _storage == "aliyun":
+                    AliyunHelper().upload(drive_id=_drive_id, parent_file_id=_fileid, file_path=temp_path)
+                elif _storage == "u115":
+                    U115Helper().upload(parent_file_id=_fileid, file_path=temp_path)
+                logger.info(f"{_path.name} 上传完成")
+            else:
+                # 保存到本地
+                logger.info(f"正在保存 {_path.name} ...")
+                _path.write_bytes(_content)
+                logger.info(f"{_path} 已保存")
+
+        def __save_image(_url: str) -> Optional[bytes]:
+            """
+            下载图片并保存
+            """
+            try:
+                logger.info(f"正在下载图片：{_url} ...")
+                r = RequestUtils(proxies=settings.PROXY).get_res(url=_url)
+                if r:
+                    return r.content
+                else:
+                    logger.info(f"{_url} 图片下载失败，请检查网络连通性！")
+            except Exception as err:
+                logger.error(f"{_url} 图片下载失败：{str(err)}！")
+
+        # 当前文件路径
+        filepath = Path(fileitem.path)
+        if fileitem.type == "file" \
+                and (not filepath.suffix or filepath.suffix.lower() not in settings.RMT_MEDIAEXT):
+            return
+        if not meta:
+            meta = MetaInfoPath(filepath)
+        if not mediainfo:
+            mediainfo = self.recognize_by_meta(meta)
+        if not mediainfo:
+            logger.warn(f"{filepath} 无法识别文件媒体信息！")
+            return
+        logger.info(f"开始刮削：{filepath} ...")
+        if mediainfo.type == MediaType.MOVIE:
+            # 电影
+            if fileitem.type == "file":
+                # 电影文件
+                logger.info(f"正在生成电影nfo：{mediainfo.title_year} - {filepath.name}")
+                movie_nfo = self.metadata_nfo(meta=meta, mediainfo=mediainfo)
+                if not movie_nfo:
+                    logger.warn(f"{filepath.name} nfo文件生成失败！")
+                    return
+                # 保存或上传nfo文件
+                __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.parent_fileid,
+                            _path=filepath.with_suffix(".nfo"), _content=movie_nfo)
+            else:
+                # 电影目录
+                files = __list_files(_storage=storage, _fileid=fileitem.fileid,
+                                     _drive_id=fileitem.drive_id, _path=fileitem.path)
+                for file in files:
+                    self.manual_scrape(storage=storage, fileitem=file,
+                                       meta=meta, mediainfo=mediainfo,
+                                       init_folder=False)
+                # 生成目录内图片文件
+                if init_folder:
+                    # 图片
+                    for attr_name, attr_value in vars(mediainfo).items():
+                        if attr_value \
+                                and attr_name.endswith("_path") \
+                                and attr_value \
+                                and isinstance(attr_value, str) \
+                                and attr_value.startswith("http"):
+                            image_name = attr_name.replace("_path", "") + Path(attr_value).suffix
+                            image_path = filepath / image_name
+                            # 下载图片
+                            content = __save_image(_url=attr_value)
+                            # 写入nfo到根目录
+                            __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.fileid,
+                                        _path=image_path, _content=content)
+        else:
+            # 电视剧
+            if fileitem.type == "file":
+                # 当前为集文件，重新识别季集
+                file_meta = MetaInfoPath(filepath)
+                if not file_meta.begin_episode:
+                    logger.warn(f"{filepath.name} 无法识别文件集数！")
+                    return
+                file_mediainfo = self.recognize_media(meta=file_meta)
+                if not file_mediainfo:
+                    logger.warn(f"{filepath.name} 无法识别文件媒体信息！")
+                    return
+                # 获取集的nfo文件
+                episode_nfo = self.metadata_nfo(meta=file_meta, mediainfo=file_mediainfo,
+                                                season=file_meta.begin_season, episode=file_meta.begin_episode)
+                if not episode_nfo:
+                    logger.warn(f"{filepath.name} nfo生成失败！")
+                    return
+                # 保存或上传nfo文件
+                __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.parent_fileid,
+                            _path=filepath.with_suffix(".nfo"), _content=episode_nfo)
+            else:
+                # 当前为目录，处理目录内的文件
+                files = __list_files(_storage=storage, _fileid=fileitem.fileid,
+                                     _drive_id=fileitem.drive_id, _path=fileitem.path)
+                for file in files:
+                    self.manual_scrape(storage=storage, fileitem=file,
+                                       meta=meta, mediainfo=mediainfo,
+                                       init_folder=True if file.type == "dir" else False)
+                # 生成目录的nfo和图片
+                if init_folder:
+                    # 识别文件夹名称
+                    season_meta = MetaInfo(filepath.name)
+                    if season_meta.begin_season:
+                        # 当前目录有季号，生成季nfo
+                        season_nfo = self.metadata_nfo(meta=meta, mediainfo=mediainfo, season=meta.begin_season)
+                        if not season_nfo:
+                            logger.warn(f"无法生成电视剧季nfo文件：{meta.name}")
+                            return
+                        # 写入nfo到根目录
+                        nfo_path = filepath / "season.nfo"
+                        __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.fileid,
+                                    _path=nfo_path, _content=season_nfo)
+                        # TMDB季poster图片
+                        image_dict = self.metadata_img(mediainfo=mediainfo, season=season_meta.begin_season)
+                        if image_dict:
+                            for image_name, image_url in image_dict.items():
+                                image_path = filepath.with_name(image_name)
+                                # 下载图片
+                                content = __save_image(image_url)
+                                # 保存图片文件到当前目录
+                                __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.fileid,
+                                            _path=image_path, _content=content)
+                    if season_meta.name:
+                        # 当前目录有名称，生成tvshow nfo 和 tv图片
+                        tv_nfo = self.metadata_nfo(meta=meta, mediainfo=mediainfo)
+                        if not tv_nfo:
+                            logger.warn(f"无法生成电视剧nfo文件：{meta.name}")
+                            return
+                        # 写入tvshow nfo到根目录
+                        nfo_path = filepath / "tvshow.nfo"
+                        __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.fileid,
+                                    _path=nfo_path, _content=tv_nfo)
+                        # 生成目录图片
+                        image_dict = self.metadata_img(mediainfo=mediainfo)
+                        if image_dict:
+                            for image_name, image_url in image_dict.items():
+                                image_path = filepath.parent.with_name(image_name)
+                                # 下载图片
+                                content = __save_image(image_url)
+                                # 保存图片文件到当前目录
+                                __save_file(_storage=storage, _drive_id=fileitem.drive_id, _fileid=fileitem.fileid,
+                                            _path=image_path, _content=content)
+
+        logger.info(f"{filepath.name} 刮削完成")

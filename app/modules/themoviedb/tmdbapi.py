@@ -15,7 +15,7 @@ from .tmdbv3api import TMDb, Search, Movie, TV, Season, Episode, Discover, Trend
 from .tmdbv3api.exceptions import TMDbException
 
 
-class TmdbHelper:
+class TmdbApi:
     """
     TMDB识别匹配
     """
@@ -78,7 +78,7 @@ class TmdbHelper:
                 ret_infos.append(movie)
         return ret_infos
 
-    def search_tv_tmdbinfos(self, title: str, year: str) -> List[dict]:
+    def search_tvs(self, title: str, year: str) -> List[dict]:
         """
         查询模糊匹配的所有电视剧TMDB信息
         """
@@ -94,6 +94,14 @@ class TmdbHelper:
                 tv['media_type'] = MediaType.TV
                 ret_infos.append(tv)
         return ret_infos
+
+    def search_persons(self, name: str) -> List[dict]:
+        """
+        查询模糊匹配的所有人物TMDB信息
+        """
+        if not name:
+            return []
+        return self.search.people(term=name) or []
 
     @staticmethod
     def __compare_names(file_name: str, tmdb_names: list) -> bool:
@@ -168,7 +176,7 @@ class TmdbHelper:
             return None
         # TMDB搜索
         info = {}
-        if mtype == MediaType.MOVIE:
+        if mtype != MediaType.TV:
             year_range = [year]
             if year:
                 year_range.append(str(int(year) + 1))
@@ -189,10 +197,16 @@ class TmdbHelper:
                                                   season_year,
                                                   season_number)
             if not info:
-                logger.debug(
-                    f"正在识别{mtype.value}：{name}, 年份={year} ...")
-                info = self.__search_tv_by_name(name,
-                                                year)
+                year_range = [year]
+                if year:
+                    year_range.append(str(int(year) + 1))
+                    year_range.append(str(int(year) - 1))
+                for year in year_range:
+                    logger.debug(
+                        f"正在识别{mtype.value}：{name}, 年份={year} ...")
+                    info = self.__search_tv_by_name(name, year)
+                    if info:
+                        break
             if info:
                 info['media_type'] = MediaType.TV
         # 返回
@@ -211,48 +225,38 @@ class TmdbHelper:
             else:
                 movies = self.search.movies(term=name)
         except TMDbException as err:
-            logger.error(f"连接TMDB出错：{err}")
+            logger.error(f"连接TMDB出错：{str(err)}")
             return None
         except Exception as e:
-            logger.error(f"连接TMDB出错：{e}")
-            print(traceback.print_exc())
+            logger.error(f"连接TMDB出错：{str(e)} - {traceback.format_exc()}")
             return None
         logger.debug(f"API返回：{str(self.search.total_results)}")
-        if len(movies) == 0:
+        if (movies is None) or (len(movies) == 0):
             logger.debug(f"{name} 未找到相关电影信息!")
             return {}
         else:
-            # 匹配标题、原标题
-            if year:
-                for movie in movies:
-                    if movie.get('release_date'):
-                        if self.__compare_names(name, movie.get('title')) \
-                                and movie.get('release_date')[0:4] == str(year):
-                            return movie
-                        if self.__compare_names(name, movie.get('original_title')) \
-                                and movie.get('release_date')[0:4] == str(year):
-                            return movie
-            else:
-                for movie in movies:
-                    if self.__compare_names(name, movie.get('title')) \
-                            or self.__compare_names(name, movie.get('original_title')):
-                        return movie
-            # 匹配别名、译名
-            index = 0
+            # 按年份降序排列
+            movies = sorted(
+                movies,
+                key=lambda x: x.get('release_date') or '0000-00-00',
+                reverse=True
+            )
             for movie in movies:
-                # 有年份先过滤
-                if year:
-                    if not movie.get('release_date'):
-                        continue
-                    if movie.get('release_date')[0:4] != str(year):
-                        continue
-                index += 1
+                # 年份
+                movie_year = movie.get('release_date')[0:4] if movie.get('release_date') else None
+                if year and movie_year != year:
+                    # 年份不匹配
+                    continue
+                # 匹配标题、原标题
+                if self.__compare_names(name, movie.get('title')):
+                    return movie
+                if self.__compare_names(name, movie.get('original_title')):
+                    return movie
+                # 匹配别名、译名
                 if not movie.get("names"):
                     movie = self.get_info(mtype=MediaType.MOVIE, tmdbid=movie.get("id"))
                 if movie and self.__compare_names(name, movie.get("names")):
                     return movie
-                if index > 5:
-                    break
         return {}
 
     def __search_tv_by_name(self, name: str, year: str) -> Optional[dict]:
@@ -268,48 +272,37 @@ class TmdbHelper:
             else:
                 tvs = self.search.tv_shows(term=name)
         except TMDbException as err:
-            logger.error(f"连接TMDB出错：{err}")
+            logger.error(f"连接TMDB出错：{str(err)}")
             return None
         except Exception as e:
-            logger.error(f"连接TMDB出错：{e}")
-            print(traceback.print_exc())
+            logger.error(f"连接TMDB出错：{str(e)} - {traceback.format_exc()}")
             return None
         logger.debug(f"API返回：{str(self.search.total_results)}")
-        if len(tvs) == 0:
+        if (tvs is None) or (len(tvs) == 0):
             logger.debug(f"{name} 未找到相关剧集信息!")
             return {}
         else:
-            # 匹配标题、原标题
-            if year:
-                for tv in tvs:
-                    if tv.get('first_air_date'):
-                        if self.__compare_names(name, tv.get('name')) \
-                                and tv.get('first_air_date')[0:4] == str(year):
-                            return tv
-                        if self.__compare_names(name, tv.get('original_name')) \
-                                and tv.get('first_air_date')[0:4] == str(year):
-                            return tv
-            else:
-                for tv in tvs:
-                    if self.__compare_names(name, tv.get('name')) \
-                            or self.__compare_names(name, tv.get('original_name')):
-                        return tv
-            # 匹配别名、译名
-            index = 0
+            # 按年份降序排列
+            tvs = sorted(
+                tvs,
+                key=lambda x: x.get('first_air_date') or '0000-00-00',
+                reverse=True
+            )
             for tv in tvs:
-                # 有年份先过滤
-                if year:
-                    if not tv.get('first_air_date'):
-                        continue
-                    if tv.get('first_air_date')[0:4] != str(year):
-                        continue
-                index += 1
+                tv_year = tv.get('first_air_date')[0:4] if tv.get('first_air_date') else None
+                if year and tv_year != year:
+                    # 年份不匹配
+                    continue
+                # 匹配标题、原标题
+                if self.__compare_names(name, tv.get('name')):
+                    return tv
+                if self.__compare_names(name, tv.get('original_name')):
+                    return tv
+                # 匹配别名、译名
                 if not tv.get("names"):
                     tv = self.get_info(mtype=MediaType.TV, tmdbid=tv.get("id"))
                 if tv and self.__compare_names(name, tv.get("names")):
                     return tv
-                if index > 5:
-                    break
         return {}
 
     def __search_tv_by_season(self, name: str, season_year: str, season_number: int) -> Optional[dict]:
@@ -333,32 +326,38 @@ class TmdbHelper:
                             return True
             except Exception as e1:
                 logger.error(f"连接TMDB出错：{e1}")
-                print(traceback.print_exc())
+                print(traceback.format_exc())
                 return False
             return False
 
         try:
             tvs = self.search.tv_shows(term=name)
         except TMDbException as err:
-            logger.error(f"连接TMDB出错：{err}")
+            logger.error(f"连接TMDB出错：{str(err)}")
             return None
         except Exception as e:
-            logger.error(f"连接TMDB出错：{e}")
-            print(traceback.print_exc())
+            logger.error(f"连接TMDB出错：{str(e)}")
+            print(traceback.format_exc())
             return None
 
-        if len(tvs) == 0:
+        if (tvs is None) or (len(tvs) == 0):
             logger.debug("%s 未找到季%s相关信息!" % (name, season_number))
             return {}
         else:
-            # 匹配标题、原标题
+            # 按年份降序排列
+            tvs = sorted(
+                tvs,
+                key=lambda x: x.get('first_air_date') or '0000-00-00',
+                reverse=True
+            )
             for tv in tvs:
+                # 年份
+                tv_year = tv.get('first_air_date')[0:4] if tv.get('first_air_date') else None
                 if (self.__compare_names(name, tv.get('name'))
                     or self.__compare_names(name, tv.get('original_name'))) \
-                        and (tv.get('first_air_date') and tv.get('first_air_date')[0:4] == str(season_year)):
+                        and (tv_year == str(season_year)):
                     return tv
-            # 匹配别名、译名
-            for tv in tvs[:5]:
+                # 匹配别名、译名
                 if not tv.get("names"):
                     tv = self.get_info(mtype=MediaType.TV, tmdbid=tv.get("id"))
                 if not tv or not self.__compare_names(name, tv.get("names")):
@@ -407,46 +406,65 @@ class TmdbHelper:
 
     def match_multi(self, name: str) -> Optional[dict]:
         """
-        根据名称同时查询电影和电视剧，不带年份
+        根据名称同时查询电影和电视剧，没有类型也没有年份时使用
         :param name: 识别的文件名或种子名
         :return: 匹配的媒体信息
         """
         try:
             multis = self.search.multi(term=name) or []
         except TMDbException as err:
-            logger.error(f"连接TMDB出错：{err}")
+            logger.error(f"连接TMDB出错：{str(err)}")
             return None
         except Exception as e:
-            logger.error(f"连接TMDB出错：{e}")
-            print(traceback.print_exc())
+            logger.error(f"连接TMDB出错：{str(e)}")
+            print(traceback.format_exc())
             return None
         logger.debug(f"API返回：{str(self.search.total_results)}")
-        if len(multis) == 0:
+        # 返回结果
+        ret_info = {}
+        if (multis is None) or (len(multis) == 0):
             logger.debug(f"{name} 未找到相关媒体息!")
+            return {}
         else:
-            # 匹配标题、原标题
+            # 按年份降序排列，电影在前面
+            multis = sorted(
+                multis,
+                key=lambda x: ("1"
+                               if x.get("media_type") == "movie"
+                               else "0") + (x.get('release_date')
+                                            or x.get('first_air_date')
+                                            or '0000-00-00'),
+                reverse=True
+            )
             for multi in multis:
                 if multi.get("media_type") == "movie":
                     if self.__compare_names(name, multi.get('title')) \
                             or self.__compare_names(name, multi.get('original_title')):
-                        return multi
-                elif multi.get("media_type") == "tv":
-                    if self.__compare_names(name, multi.get('name')) \
-                            or self.__compare_names(name, multi.get('original_name')):
-                        return multi
-            # 匹配别名、译名
-            for multi in multis[:5]:
-                if multi.get("media_type") == "movie":
+                        ret_info = multi
+                        break
+                    # 匹配别名、译名
                     if not multi.get("names"):
                         multi = self.get_info(mtype=MediaType.MOVIE, tmdbid=multi.get("id"))
                     if multi and self.__compare_names(name, multi.get("names")):
-                        return multi
+                        ret_info = multi
+                        break
                 elif multi.get("media_type") == "tv":
+                    if self.__compare_names(name, multi.get('name')) \
+                            or self.__compare_names(name, multi.get('original_name')):
+                        ret_info = multi
+                        break
+                    # 匹配别名、译名
                     if not multi.get("names"):
                         multi = self.get_info(mtype=MediaType.TV, tmdbid=multi.get("id"))
                     if multi and self.__compare_names(name, multi.get("names")):
-                        return multi
-        return {}
+                        ret_info = multi
+                        break
+            # 类型变更
+            if (ret_info
+                    and not isinstance(ret_info.get("media_type"), MediaType)):
+                ret_info['media_type'] = MediaType.MOVIE if ret_info.get("media_type") == "movie" else MediaType.TV
+
+            return ret_info
 
     @lru_cache(maxsize=settings.CACHE_CONF.get('tmdb'))
     def match_web(self, name: str, mtype: MediaType) -> Optional[dict]:
@@ -503,7 +521,7 @@ class TmdbHelper:
                 else:
                     logger.info("%s TMDB网站未查询到媒体信息！" % name)
             except Exception as err:
-                logger.error(f"从TheDbMovie网站查询出错：{err}")
+                logger.error(f"从TheDbMovie网站查询出错：{str(err)}")
                 return None
         return None
 
@@ -512,7 +530,7 @@ class TmdbHelper:
                  tmdbid: int) -> dict:
         """
         给定TMDB号，查询一条媒体信息
-        :param mtype: 类型：电影、电视剧、动漫，为空时都查（此时用不上年份）
+        :param mtype: 类型：电影、电视剧，为空时都查（此时用不上年份）
         :param tmdbid: TMDB的ID，有tmdbid时优先使用tmdbid，否则使用年份和标题
         """
 
@@ -550,6 +568,8 @@ class TmdbHelper:
             tmdb_info['genre_ids'] = __get_genre_ids(tmdb_info.get('genres'))
             # 别名和译名
             tmdb_info['names'] = self.__get_names(tmdb_info)
+            # 转换多语种标题
+            self.__update_tmdbinfo_extra_title(tmdb_info)
             # 转换中文标题
             self.__update_tmdbinfo_cn_title(tmdb_info)
 
@@ -580,17 +600,61 @@ class TmdbHelper:
                         return title
             return tmdbinfo.get("title") if tmdbinfo.get("media_type") == MediaType.MOVIE else tmdbinfo.get("name")
 
-        # 查找中文名
+        # 原标题
         org_title = tmdb_info.get("title") \
             if tmdb_info.get("media_type") == MediaType.MOVIE \
             else tmdb_info.get("name")
+        # 查找中文名
         if not StringUtils.is_chinese(org_title):
             cn_title = __get_tmdb_chinese_title(tmdb_info)
             if cn_title and cn_title != org_title:
+                # 使用中文别名
                 if tmdb_info.get("media_type") == MediaType.MOVIE:
                     tmdb_info['title'] = cn_title
                 else:
                     tmdb_info['name'] = cn_title
+            else:
+                # 使用新加坡名
+                sg_title = tmdb_info.get("sg_title")
+                if sg_title and sg_title != org_title and StringUtils.is_chinese(sg_title):
+                    if tmdb_info.get("media_type") == MediaType.MOVIE:
+                        tmdb_info['title'] = sg_title
+                    else:
+                        tmdb_info['name'] = sg_title
+
+    @staticmethod
+    def __update_tmdbinfo_extra_title(tmdb_info: dict):
+        """
+        更新TMDB信息中的其它语种名称
+        """
+
+        def __get_tmdb_lang_title(tmdbinfo: dict, lang: str = "US"):
+            """
+            从译名中获取其它语种标题
+            """
+            if not tmdbinfo:
+                return None
+            translations = tmdb_info.get("translations", {}).get("translations", [])
+            for translation in translations:
+                if translation.get("iso_3166_1") == lang:
+                    return translation.get("data", {}).get("title") if tmdbinfo.get("media_type") == MediaType.MOVIE \
+                        else translation.get("data", {}).get("name")
+            return None
+
+        # 原标题
+        org_title = (
+            tmdb_info.get("original_title")
+            if tmdb_info.get("media_type") == MediaType.MOVIE
+            else tmdb_info.get("original_name")
+        )
+        # 查找英文名
+        if tmdb_info.get("original_language") == "en":
+            tmdb_info['en_title'] = org_title
+        else:
+            en_title = __get_tmdb_lang_title(tmdb_info, "US")
+            tmdb_info['en_title'] = en_title or org_title
+        # 查找新加坡名（用于替代中文名）
+        tmdb_info['sg_title'] = __get_tmdb_lang_title(tmdb_info, "SG") or org_title
 
     def __get_movie_detail(self,
                            tmdbid: int,
@@ -695,10 +759,10 @@ class TmdbHelper:
         if not self.movie:
             return {}
         try:
-            logger.info("正在查询TMDB电影：%s ..." % tmdbid)
+            logger.debug("正在查询TMDB电影：%s ..." % tmdbid)
             tmdbinfo = self.movie.details(tmdbid, append_to_response)
             if tmdbinfo:
-                logger.info(f"{tmdbid} 查询结果：{tmdbinfo.get('title')}")
+                logger.debug(f"{tmdbid} 查询结果：{tmdbinfo.get('title')}")
             return tmdbinfo or {}
         except Exception as e:
             print(str(e))
@@ -878,10 +942,10 @@ class TmdbHelper:
         if not self.tv:
             return {}
         try:
-            logger.info("正在查询TMDB电视剧：%s ..." % tmdbid)
+            logger.debug("正在查询TMDB电视剧：%s ..." % tmdbid)
             tmdbinfo = self.tv.details(tv_id=tmdbid, append_to_response=append_to_response)
             if tmdbinfo:
-                logger.info(f"{tmdbid} 查询结果：{tmdbinfo.get('name')}")
+                logger.debug(f"{tmdbid} 查询结果：{tmdbinfo.get('name')}")
             return tmdbinfo or {}
         except Exception as e:
             print(str(e))
@@ -954,7 +1018,7 @@ class TmdbHelper:
         if not self.season:
             return {}
         try:
-            logger.info("正在查询TMDB电视剧：%s，季：%s ..." % (tmdbid, season))
+            logger.debug("正在查询TMDB电视剧：%s，季：%s ..." % (tmdbid, season))
             tmdbinfo = self.season.details(tv_id=tmdbid, season_num=season)
             return tmdbinfo or {}
         except Exception as e:
@@ -971,7 +1035,7 @@ class TmdbHelper:
         if not self.episode:
             return {}
         try:
-            logger.info("正在查询TMDB集图片：%s，季：%s，集：%s ..." % (tmdbid, season, episode))
+            logger.debug("正在查询TMDB集详情：%s，季：%s，集：%s ..." % (tmdbid, season, episode))
             tmdbinfo = self.episode.details(tv_id=tmdbid, season_num=season, episode_num=episode)
             return tmdbinfo or {}
         except Exception as e:
@@ -987,8 +1051,9 @@ class TmdbHelper:
         if not self.discover:
             return []
         try:
-            logger.info(f"正在发现电影：{kwargs}...")
-            tmdbinfo = self.discover.discover_movies(kwargs)
+            logger.debug(f"正在发现电影：{kwargs}...")
+            params_tuple = tuple(kwargs.items())
+            tmdbinfo = self.discover.discover_movies(params_tuple)
             if tmdbinfo:
                 for info in tmdbinfo:
                     info['media_type'] = MediaType.MOVIE
@@ -1006,8 +1071,9 @@ class TmdbHelper:
         if not self.discover:
             return []
         try:
-            logger.info(f"正在发现电视剧：{kwargs}...")
-            tmdbinfo = self.discover.discover_tv_shows(kwargs)
+            logger.debug(f"正在发现电视剧：{kwargs}...")
+            params_tuple = tuple(kwargs.items())
+            tmdbinfo = self.discover.discover_tv_shows(params_tuple)
             if tmdbinfo:
                 for info in tmdbinfo:
                     info['media_type'] = MediaType.TV
@@ -1023,7 +1089,7 @@ class TmdbHelper:
         if not self.movie:
             return {}
         try:
-            logger.info(f"正在获取电影图片：{tmdbid}...")
+            logger.debug(f"正在获取电影图片：{tmdbid}...")
             return self.movie.images(movie_id=tmdbid) or {}
         except Exception as e:
             print(str(e))
@@ -1036,7 +1102,7 @@ class TmdbHelper:
         if not self.tv:
             return {}
         try:
-            logger.info(f"正在获取电视剧图片：{tmdbid}...")
+            logger.debug(f"正在获取电视剧图片：{tmdbid}...")
             return self.tv.images(tv_id=tmdbid) or {}
         except Exception as e:
             print(str(e))
@@ -1049,7 +1115,7 @@ class TmdbHelper:
         if not self.movie:
             return []
         try:
-            logger.info(f"正在获取相似电影：{tmdbid}...")
+            logger.debug(f"正在获取相似电影：{tmdbid}...")
             return self.movie.similar(movie_id=tmdbid) or []
         except Exception as e:
             print(str(e))
@@ -1062,7 +1128,7 @@ class TmdbHelper:
         if not self.tv:
             return []
         try:
-            logger.info(f"正在获取相似电视剧：{tmdbid}...")
+            logger.debug(f"正在获取相似电视剧：{tmdbid}...")
             return self.tv.similar(tv_id=tmdbid) or []
         except Exception as e:
             print(str(e))
@@ -1075,7 +1141,7 @@ class TmdbHelper:
         if not self.movie:
             return []
         try:
-            logger.info(f"正在获取推荐电影：{tmdbid}...")
+            logger.debug(f"正在获取推荐电影：{tmdbid}...")
             return self.movie.recommendations(movie_id=tmdbid) or []
         except Exception as e:
             print(str(e))
@@ -1088,7 +1154,7 @@ class TmdbHelper:
         if not self.tv:
             return []
         try:
-            logger.info(f"正在获取推荐电视剧：{tmdbid}...")
+            logger.debug(f"正在获取推荐电视剧：{tmdbid}...")
             return self.tv.recommendations(tv_id=tmdbid) or []
         except Exception as e:
             print(str(e))
@@ -1101,7 +1167,7 @@ class TmdbHelper:
         if not self.movie:
             return []
         try:
-            logger.info(f"正在获取电影演职人员：{tmdbid}...")
+            logger.debug(f"正在获取电影演职人员：{tmdbid}...")
             info = self.movie.credits(movie_id=tmdbid) or {}
             cast = info.get('cast') or []
             if cast:
@@ -1118,7 +1184,7 @@ class TmdbHelper:
         if not self.tv:
             return []
         try:
-            logger.info(f"正在获取电视剧演职人员：{tmdbid}...")
+            logger.debug(f"正在获取电视剧演职人员：{tmdbid}...")
             info = self.tv.credits(tv_id=tmdbid) or {}
             cast = info.get('cast') or []
             if cast:
@@ -1131,11 +1197,31 @@ class TmdbHelper:
     def get_person_detail(self, person_id: int) -> dict:
         """
         获取人物详情
+        {
+            "adult": false,
+            "also_known_as": [
+                "Michael Chen",
+                "Chen He",
+                "陈赫"
+            ],
+            "biography": "陈赫，xxx",
+            "birthday": "1985-11-09",
+            "deathday": null,
+            "gender": 2,
+            "homepage": "https://movie.douban.com/celebrity/1313841/",
+            "id": 1397016,
+            "imdb_id": "nm4369305",
+            "known_for_department": "Acting",
+            "name": "Chen He",
+            "place_of_birth": "Fuzhou，Fujian Province，China",
+            "popularity": 9.228,
+            "profile_path": "/2Bk39zVuoHUNHtpZ7LVg7OgkDd4.jpg"
+        }
         """
         if not self.person:
             return {}
         try:
-            logger.info(f"正在获取人物详情：{person_id}...")
+            logger.debug(f"正在获取人物详情：{person_id}...")
             return self.person.details(person_id=person_id) or {}
         except Exception as e:
             print(str(e))
@@ -1148,12 +1234,60 @@ class TmdbHelper:
         if not self.person:
             return []
         try:
-            logger.info(f"正在获取人物参演作品：{person_id}...")
-            info = self.person.movie_credits(person_id=person_id) or {}
-            cast = info.get('cast') or []
+            logger.debug(f"正在获取人物参演作品：{person_id}...")
+            movies = self.person.movie_credits(person_id=person_id) or {}
+            tvs = self.person.tv_credits(person_id=person_id) or {}
+            cast = (movies.get('cast') or []) + (tvs.get('cast') or [])
             if cast:
+                # 按年份降序排列
+                cast = sorted(cast, key=lambda x: x.get('release_date') or x.get('first_air_date') or '1900-01-01',
+                              reverse=True)
                 return cast[(page - 1) * count: page * count]
             return []
         except Exception as e:
             print(str(e))
             return []
+
+    def clear_cache(self):
+        """
+        清除缓存
+        """
+        self.tmdb.cache_clear()
+
+    def get_tv_episode_years(self, tv_id: int):
+        """
+        查询剧集组年份
+        """
+        try:
+            episode_groups = self.tv.episode_groups(tv_id)
+            if not episode_groups:
+                return {}
+            episode_years = {}
+            for episode_group in episode_groups:
+                logger.debug(f"正在获取剧集组年份：{episode_group.get('id')}...")
+                if episode_group.get('type') != 6:
+                    # 只处理剧集部分
+                    continue
+                group_episodes = self.tv.group_episodes(episode_group.get('id'))
+                if not group_episodes:
+                    continue
+                for group_episode in group_episodes:
+                    order = group_episode.get('order')
+                    episodes = group_episode.get('episodes')
+                    if not episodes or not order:
+                        continue
+                    # 当前季第一季时间
+                    first_date = episodes[0].get("air_date")
+                    if not first_date and str(first_date).split("-") != 3:
+                        continue
+                    episode_years[order] = str(first_date).split("-")[0]
+            return episode_years
+        except Exception as e:
+            print(str(e))
+            return {}
+
+    def close(self):
+        """
+        关闭连接
+        """
+        self.tmdb.close()

@@ -1,5 +1,3 @@
-import json
-from pathlib import Path
 from typing import Optional, Tuple, Union, Any, List, Generator
 
 from app import schemas
@@ -7,7 +5,6 @@ from app.core.context import MediaInfo
 from app.log import logger
 from app.modules import _ModuleBase
 from app.modules.jellyfin.jellyfin import Jellyfin
-from app.schemas import ExistMediaInfo, WebhookEventInfo
 from app.schemas.types import MediaType
 
 
@@ -17,11 +14,33 @@ class JellyfinModule(_ModuleBase):
     def init_module(self) -> None:
         self.jellyfin = Jellyfin()
 
-    def stop(self):
-        pass
+    @staticmethod
+    def get_name() -> str:
+        return "Jellyfin"
 
     def init_setting(self) -> Tuple[str, Union[str, bool]]:
         return "MEDIASERVER", "jellyfin"
+
+    def scheduler_job(self) -> None:
+        """
+        定时任务，每10分钟调用一次
+        """
+        # 定时重连
+        if self.jellyfin.is_inactive():
+            self.jellyfin.reconnect()
+
+    def stop(self):
+        pass
+
+    def test(self) -> Tuple[bool, str]:
+        """
+        测试模块连接性
+        """
+        if self.jellyfin.is_inactive():
+            self.jellyfin.reconnect()
+        if not self.jellyfin.get_user():
+            return False, "无法连接Jellyfin，请检查参数配置"
+        return True, ""
 
     def user_authenticate(self, name: str, password: str) -> Optional[str]:
         """
@@ -33,7 +52,7 @@ class JellyfinModule(_ModuleBase):
         # Jellyfin认证
         return self.jellyfin.authenticate(name, password)
 
-    def webhook_parser(self, body: Any, form: Any, args: Any) -> WebhookEventInfo:
+    def webhook_parser(self, body: Any, form: Any, args: Any) -> Optional[schemas.WebhookEventInfo]:
         """
         解析Webhook报文体
         :param body:  请求体
@@ -41,98 +60,122 @@ class JellyfinModule(_ModuleBase):
         :param args:  请求参数
         :return: 字典，解析为消息时需要包含：title、text、image
         """
-        return self.jellyfin.get_webhook_message(json.loads(body))
+        return self.jellyfin.get_webhook_message(body)
 
-    def media_exists(self, mediainfo: MediaInfo) -> Optional[ExistMediaInfo]:
+    def media_exists(self, mediainfo: MediaInfo, itemid: str = None) -> Optional[schemas.ExistMediaInfo]:
         """
         判断媒体文件是否存在
         :param mediainfo:  识别的媒体信息
+        :param itemid:  媒体服务器ItemID
         :return: 如不存在返回None，存在时返回信息，包括每季已存在所有集{type: movie/tv, seasons: {season: [episodes]}}
         """
         if mediainfo.type == MediaType.MOVIE:
-            movies = self.jellyfin.get_movies(title=mediainfo.title, year=mediainfo.year)
+            if itemid:
+                movie = self.jellyfin.get_iteminfo(itemid)
+                if movie:
+                    logger.info(f"媒体库中已存在：{movie}")
+                    return schemas.ExistMediaInfo(
+                        type=MediaType.MOVIE,
+                        server="jellyfin",
+                        itemid=movie.item_id
+                    )
+            movies = self.jellyfin.get_movies(title=mediainfo.title, year=mediainfo.year, tmdb_id=mediainfo.tmdb_id)
             if not movies:
                 logger.info(f"{mediainfo.title_year} 在媒体库中不存在")
                 return None
             else:
                 logger.info(f"媒体库中已存在：{movies}")
-                return ExistMediaInfo(type=MediaType.MOVIE)
+                return schemas.ExistMediaInfo(
+                    type=MediaType.MOVIE,
+                    server="jellyfin",
+                    itemid=movies[0].item_id
+                )
         else:
-            tvs = self.jellyfin.get_tv_episodes(title=mediainfo.title,
-                                                year=mediainfo.year,
-                                                tmdb_id=mediainfo.tmdb_id)
+            itemid, tvs = self.jellyfin.get_tv_episodes(title=mediainfo.title,
+                                                        year=mediainfo.year,
+                                                        tmdb_id=mediainfo.tmdb_id,
+                                                        item_id=itemid)
             if not tvs:
                 logger.info(f"{mediainfo.title_year} 在媒体库中不存在")
                 return None
             else:
                 logger.info(f"{mediainfo.title_year} 媒体库中已存在：{tvs}")
-                return ExistMediaInfo(type=MediaType.TV, seasons=tvs)
+                return schemas.ExistMediaInfo(
+                    type=MediaType.TV,
+                    seasons=tvs,
+                    server="jellyfin",
+                    itemid=itemid
+                )
 
-    def refresh_mediaserver(self, mediainfo: MediaInfo, file_path: Path) -> Optional[bool]:
-        """
-        刷新媒体库
-        :param mediainfo:  识别的媒体信息
-        :param file_path:  文件路径
-        :return: 成功或失败
-        """
-        return self.jellyfin.refresh_root_library()
-
-    def media_statistic(self) -> schemas.Statistic:
+    def media_statistic(self) -> List[schemas.Statistic]:
         """
         媒体数量统计
         """
         media_statistic = self.jellyfin.get_medias_count()
-        user_count = self.jellyfin.get_user_count()
-        return schemas.Statistic(
-            movie_count=media_statistic.get("MovieCount") or 0,
-            tv_count=media_statistic.get("SeriesCount") or 0,
-            episode_count=media_statistic.get("EpisodeCount") or 0,
-            user_count=user_count or 0
-        )
+        media_statistic.user_count = self.jellyfin.get_user_count()
+        return [media_statistic]
 
-    def mediaserver_librarys(self) -> List[schemas.MediaServerLibrary]:
+    def mediaserver_librarys(self, server: str = None, username: str = None) -> Optional[List[schemas.MediaServerLibrary]]:
         """
         媒体库列表
         """
-        librarys = self.jellyfin.get_librarys()
-        if not librarys:
-            return []
-        return [schemas.MediaServerLibrary(
-            server="jellyfin",
-            id=library.get("id"),
-            name=library.get("name"),
-            type=library.get("type"),
-            path=library.get("path")
-        ) for library in librarys]
+        if server and server != "jellyfin":
+            return None
+        return self.jellyfin.get_librarys(username)
 
-    def mediaserver_items(self, library_id: str) -> Generator:
+    def mediaserver_items(self, server: str, library_id: str) -> Optional[Generator]:
         """
         媒体库项目列表
         """
-        items = self.jellyfin.get_items(library_id)
-        for item in items:
-            yield schemas.MediaServerItem(
-                server="jellyfin",
-                library=item.get("library"),
-                item_id=item.get("id"),
-                item_type=item.get("type"),
-                title=item.get("title"),
-                original_title=item.get("original_title"),
-                year=item.get("year"),
-                tmdbid=item.get("tmdbid"),
-                imdbid=item.get("imdbid"),
-                tvdbid=item.get("tvdbid"),
-                path=item.get("path"),
-            )
+        if server != "jellyfin":
+            return None
+        return self.jellyfin.get_items(library_id)
 
-    def mediaserver_tv_episodes(self, item_id: Union[str, int]) -> List[schemas.MediaServerSeasonInfo]:
+    def mediaserver_iteminfo(self, server: str, item_id: str) -> Optional[schemas.MediaServerItem]:
+        """
+        媒体库项目详情
+        """
+        if server != "jellyfin":
+            return None
+        return self.jellyfin.get_iteminfo(item_id)
+
+    def mediaserver_tv_episodes(self, server: str,
+                                item_id: Union[str, int]) -> Optional[List[schemas.MediaServerSeasonInfo]]:
         """
         获取剧集信息
         """
-        seasoninfo = self.jellyfin.get_tv_episodes(item_id=item_id)
+        if server != "jellyfin":
+            return None
+        _, seasoninfo = self.jellyfin.get_tv_episodes(item_id=item_id)
         if not seasoninfo:
             return []
         return [schemas.MediaServerSeasonInfo(
             season=season,
             episodes=episodes
         ) for season, episodes in seasoninfo.items()]
+
+    def mediaserver_playing(self, count: int = 20,
+                            server: str = None, username: str = None) -> List[schemas.MediaServerPlayItem]:
+        """
+        获取媒体服务器正在播放信息
+        """
+        if server and server != "jellyfin":
+            return []
+        return self.jellyfin.get_resume(num=count, username=username)
+
+    def mediaserver_play_url(self, server: str, item_id: Union[str, int]) -> Optional[str]:
+        """
+        获取媒体库播放地址
+        """
+        if server != "jellyfin":
+            return None
+        return self.jellyfin.get_play_url(item_id)
+
+    def mediaserver_latest(self, count: int = 20,
+                           server: str = None, username: str = None) -> List[schemas.MediaServerPlayItem]:
+        """
+        获取媒体服务器最新入库条目
+        """
+        if server and server != "jellyfin":
+            return []
+        return self.jellyfin.get_latest(num=count, username=username)

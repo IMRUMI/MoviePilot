@@ -49,11 +49,11 @@ class PlaywrightHelper:
                     # 回调函数
                     return callback(page)
                 except Exception as e:
-                    logger.error(f"网页操作失败: {e}")
+                    logger.error(f"网页操作失败: {str(e)}")
                 finally:
                     browser.close()
         except Exception as e:
-            logger.error(f"网页操作失败: {e}")
+            logger.error(f"网页操作失败: {str(e)}")
         return None
 
     def get_page_source(self, url: str,
@@ -61,7 +61,7 @@ class PlaywrightHelper:
                         ua: str = None,
                         proxies: dict = None,
                         headless: bool = False,
-                        timeout: int = 30) -> str:
+                        timeout: int = 20) -> str:
         """
         获取网页源码
         :param url: 网页地址
@@ -85,12 +85,12 @@ class PlaywrightHelper:
                     page.wait_for_load_state("networkidle", timeout=timeout * 1000)
                     source = page.content()
                 except Exception as e:
-                    logger.error(f"获取网页源码失败: {e}")
+                    logger.error(f"获取网页源码失败: {str(e)}")
                     source = None
                 finally:
                     browser.close()
         except Exception as e:
-            logger.error(f"获取网页源码失败: {e}")
+            logger.error(f"获取网页源码失败: {str(e)}")
         return source
 
 

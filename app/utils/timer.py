@@ -28,10 +28,13 @@ class TimerUtils:
             # 随机生成下一个任务的时间间隔
             interval_minutes = random.randint(min_interval, max_interval)
             random_interval = datetime.timedelta(minutes=interval_minutes)
+            # 记录上一个任务的时间触发器
+            last_random_trigger = random_trigger
             # 更新当前时间为下一个任务的时间触发器
             random_trigger += random_interval
-            # 达到结束时间时退出
-            if random_trigger.hour > end_hour:
+            # 达到结束时间或者时间出现倒退时退出
+            if random_trigger.hour > end_hour \
+                    or random_trigger.hour < last_random_trigger.hour:
                 break
             # 添加到队列
             trigger.append(random_trigger)
@@ -53,7 +56,7 @@ class TimerUtils:
 
         days = time_difference.days
         hours, remainder = divmod(time_difference.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
+        minutes, second = divmod(remainder, 60)
 
         time_difference_string = ""
         if days > 0:
@@ -62,5 +65,17 @@ class TimerUtils:
             time_difference_string += f"{hours}小时"
         if minutes > 0:
             time_difference_string += f"{minutes}分钟"
+        if not time_difference_string and second:
+            time_difference_string = f"{second}秒"
 
         return time_difference_string
+
+    @staticmethod
+    def diff_minutes(input_datetime: datetime) -> int:
+        """
+        计算当前时间与输入时间的分钟差
+        """
+        if not input_datetime:
+            return 0
+        time_difference = datetime.datetime.now() - input_datetime
+        return int(time_difference.total_seconds() / 60)

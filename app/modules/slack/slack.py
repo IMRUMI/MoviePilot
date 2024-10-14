@@ -34,39 +34,39 @@ class Slack:
                             ssl_check_enabled=False,
                             url_verification_enabled=False)
         except Exception as err:
-            logger.error(f"Slack初始化失败: {err}")
+            logger.error(f"Slack初始化失败: {str(err)}")
             return
         self._client = slack_app.client
 
         # 注册消息响应
         @slack_app.event("message")
         def slack_message(message):
-            local_res = requests.post(self._ds_url, json=message, timeout=10)
-            logger.debug("message: %s processed, response is: %s" % (message, local_res.text))
+            with requests.post(self._ds_url, json=message, timeout=10) as local_res:
+                logger.debug("message: %s processed, response is: %s" % (message, local_res.text))
 
         @slack_app.action(re.compile(r"actionId-\d+"))
         def slack_action(ack, body):
             ack()
-            local_res = requests.post(self._ds_url, json=body, timeout=60)
-            logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
+            with requests.post(self._ds_url, json=body, timeout=60) as local_res:
+                logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
 
         @slack_app.event("app_mention")
         def slack_mention(say, body):
             say(f"收到，请稍等... <@{body.get('event', {}).get('user')}>")
-            local_res = requests.post(self._ds_url, json=body, timeout=10)
-            logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
+            with requests.post(self._ds_url, json=body, timeout=10) as local_res:
+                logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
 
         @slack_app.shortcut(re.compile(r"/*"))
         def slack_shortcut(ack, body):
             ack()
-            local_res = requests.post(self._ds_url, json=body, timeout=10)
-            logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
+            with requests.post(self._ds_url, json=body, timeout=10) as local_res:
+                logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
 
         @slack_app.command(re.compile(r"/*"))
         def slack_command(ack, body):
             ack()
-            local_res = requests.post(self._ds_url, json=body, timeout=10)
-            logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
+            with requests.post(self._ds_url, json=body, timeout=10) as local_res:
+                logger.debug("message: %s processed, response is: %s" % (body, local_res.text))
 
         # 启动服务
         try:
@@ -87,13 +87,19 @@ class Slack:
             except Exception as err:
                 logger.error("Slack消息接收服务停止失败: %s" % str(err))
 
-    def send_msg(self, title: str, text: str = "", image: str = "", url: str = "", userid: str = ""):
+    def get_state(self) -> bool:
+        """
+        获取状态
+        """
+        return True if self._client else False
+
+    def send_msg(self, title: str, text: str = "", image: str = "", link: str = "", userid: str = ""):
         """
         发送Telegram消息
         :param title: 消息标题
         :param text: 消息内容
         :param image: 消息图片地址
-        :param url: 点击消息转转的URL
+        :param link: 点击消息转转的URL
         :param userid: 用户ID，如有则只发消息给该用户
         :user_id: 发送消息的目标用户ID，为空则发给管理员
         """
@@ -126,7 +132,7 @@ class Slack:
                         "alt_text": f"{title}"
                     }})
                 # 链接
-                if url:
+                if link:
                     blocks.append({
                         "type": "actions",
                         "elements": [
@@ -138,7 +144,7 @@ class Slack:
                                     "emoji": True
                                 },
                                 "value": "click_me_url",
-                                "url": f"{url}",
+                                "url": f"{link}",
                                 "action_id": "actionId-url"
                             }
                         ]
@@ -146,7 +152,7 @@ class Slack:
             # 发送
             result = self._client.chat_postMessage(
                 channel=channel,
-                text=message_text,
+                text=message_text[:1000],
                 blocks=blocks,
                 mrkdwn=True
             )
@@ -272,6 +278,7 @@ class Slack:
                 link = torrent.page_url
                 title = f"{meta.season_episode} " \
                         f"{meta.resource_term} " \
+                        f"{meta.video_term} " \
                         f"{meta.release_group}"
                 title = re.sub(r"\s+", " ", title).strip()
                 free = torrent.volume_factor
@@ -334,5 +341,5 @@ class Slack:
                         conversation_id = channel.get("id")
                         break
         except Exception as e:
-            logger.error(f"查找Slack公共频道失败: {e}")
+            logger.error(f"查找Slack公共频道失败: {str(e)}")
         return conversation_id
